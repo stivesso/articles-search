@@ -1,0 +1,10 @@
+FROM redis/redis-stack-server
+
+# Copy the custom entrypoint script
+COPY --chmod=555 custom-entrypoint.sh /
+
+# Set the custom entrypoint
+ENTRYPOINT /custom-entrypoint.sh
+
+# Expose the Redis port
+EXPOSE 6379

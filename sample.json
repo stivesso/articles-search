@@ -1,0 +1,24 @@
+[
+  {
+    "id": 1,
+    "title": "Introduction to RedisJSON",
+    "content": "Explore the basics of RedisJSON and how it simplifies handling JSON data in Redis.",
+    "author": "Jane Doe",
+    "tags": ["Redis", "JSON", "Golang"]
+  },
+  {
+    "id": 2,
+    "title": "Redisearch: Building a Full-Text Search Engine",
+    "content": "Learn how to leverage Redisearch to implement a powerful full-text search engine.",
+    "author": "John Smith",
+    "tags": ["Redis", "Redisearch", "Search"]
+  },
+  {
+    "id": 3,
+    "title": "Golang and Redis: A Developer's Guide",
+    "content": "Discover the seamless integration of Golang with Redis and build efficient applications.",
+    "author": "Alice Johnson",
+    "tags": ["Golang", "Redis", "Development"]
+  }
+]
+
