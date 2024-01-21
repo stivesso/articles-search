@@ -1,12 +1,12 @@
 package main
 
 import (
-	"blog-search/pkg/cache"
 	"context"
 	"fmt"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/redis/go-redis/v9"
+	"github.com/stivesso/articles-search/pkg/cache"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -35,7 +35,7 @@ func main() {
 	var err error
 	// Connect to Redis
 	slog.Info("Connecting to Redis")
-	redisClient, err = cache.NewRedisClient("127.0.0.1", 6379, "", 0)
+	redisClient, err = cache.NewRedisClient("192.168.64.7", 30183, "", 0)
 	if err != nil {
 		panic(err)
 	}
@@ -72,19 +72,36 @@ func main() {
 }
 
 func getAllArticles(c echo.Context) error {
-	articlesList, err := redisClient.Get(ctx, "articleKey:*").Result()
-	if err == redis.Nil {
+	// First retrieve all Article keys using SCAN
+	var articleKeys []string
+	iter := redisClient.Scan(ctx, 0, "articleKey:*", 0).Iterator()
+	for iter.Next(ctx) {
+		articleKeys = append(articleKeys, iter.Val())
+	}
+	if err := iter.Err(); err != nil {
+		panic(err)
+	}
+
+	// Build the article List
+	var articlesList []string
+	for _, key := range articleKeys {
+		newArticle, err := redisClient.JSONGet(ctx, key).Result()
+		if err != nil && err != redis.Nil {
+			customOutput := CustomOutput{
+				Message: "An Error Occurred while trying to get All Articles",
+				Error:   err,
+			}
+			return c.JSON(http.StatusInternalServerError, customOutput)
+		}
+		if err != redis.Nil {
+			articlesList = append(articlesList, newArticle)
+		}
+	}
+	if len(articlesList) == 0 {
 		customOutput := CustomOutput{
 			Message: "No Item found",
 		}
 		return c.JSON(http.StatusNotFound, customOutput)
-	}
-	if err != nil {
-		customOutput := CustomOutput{
-			Message: "An Error Occurred while trying to get All Articles",
-			Error:   err,
-		}
-		return c.JSON(http.StatusInternalServerError, customOutput)
 	}
 	return c.JSONPretty(http.StatusOK, articlesList, indentJson)
 }

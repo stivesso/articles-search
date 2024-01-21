@@ -1,4 +1,4 @@
-module blog-search
+module github.com/stivesso/articles-search
 
 go 1.21.0
 
