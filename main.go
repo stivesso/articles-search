@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
@@ -81,29 +82,52 @@ func getAllArticles(c echo.Context) error {
 	if err := iter.Err(); err != nil {
 		panic(err)
 	}
-
-	// Build the article List
-	var articlesList []string
-	for _, key := range articleKeys {
-		newArticle, err := redisClient.JSONGet(ctx, key).Result()
-		if err != nil && err != redis.Nil {
-			customOutput := CustomOutput{
-				Message: "An Error Occurred while trying to get All Articles",
-				Error:   err,
-			}
-			return c.JSON(http.StatusInternalServerError, customOutput)
-		}
-		if err != redis.Nil {
-			articlesList = append(articlesList, newArticle)
-		}
-	}
-	if len(articlesList) == 0 {
+	if len(articleKeys) == 0 {
 		customOutput := CustomOutput{
 			Message: "No Item found",
 		}
 		return c.JSON(http.StatusNotFound, customOutput)
 	}
-	return c.JSONPretty(http.StatusOK, articlesList, indentJson)
+
+	// Build the article List, using MGET here to get all Keys, result is an array of JSONGet response
+	// JSONGet responses are themselves array containing Response
+	retrievedArticleArray, err := redisClient.JSONMGet(ctx, "$", articleKeys...).Result()
+	if err != nil && err != redis.Nil {
+		customOutput := CustomOutput{
+			Message: "An Error Occurred while trying to get All Articles",
+			Error:   err,
+		}
+		return c.JSON(http.StatusInternalServerError, customOutput)
+	}
+	if err == redis.Nil {
+		customOutput := CustomOutput{
+			Message: "No Item found",
+		}
+		return c.JSON(http.StatusNotFound, customOutput)
+	}
+
+	// Loop on each element in the array and append its first element to the result after validation
+	var result []Article
+	for _, responseRetrievedArticle := range retrievedArticleArray {
+		var resultForThisArticle []Article
+		responseArticle, isString := responseRetrievedArticle.(string)
+		if !isString {
+			customOutput := CustomOutput{
+				Message: "An Error Occurred while trying to get All Articles, Article returned were not in the correct format",
+			}
+			return c.JSON(http.StatusInternalServerError, customOutput)
+		}
+		err = json.Unmarshal([]byte(responseArticle), &resultForThisArticle)
+		if err != nil {
+			customOutput := CustomOutput{
+				Message: "An Error Occurred while trying to validate the structure of the returned Article",
+				Error:   err,
+			}
+			return c.JSONPretty(http.StatusInternalServerError, customOutput, indentJson)
+		}
+		result = append(result, resultForThisArticle[0])
+	}
+	return c.JSONPretty(http.StatusOK, result, indentJson)
 }
 
 func getArticleByID(c echo.Context) error {
@@ -117,12 +141,28 @@ func getArticleByID(c echo.Context) error {
 	}
 	if err != nil {
 		customOutput := CustomOutput{
-			Message: "An Error Occurred while trying to get All Articles",
+			Message: fmt.Sprintf("An Error Occurred while trying to get Article with key %s", id),
 			Error:   err,
 		}
 		return c.JSONPretty(http.StatusInternalServerError, customOutput, indentJson)
 	}
-	return c.JSONPretty(http.StatusOK, articleWithThisKey, indentJson)
+	if articleWithThisKey == "" {
+		customOutput := CustomOutput{
+			Message: fmt.Sprintf("No Article with ID %s found", id),
+		}
+		return c.JSONPretty(http.StatusInternalServerError, customOutput, indentJson)
+	}
+	// Let's deserialize this back, to validate the structure (which also rids of the extra backslashes)
+	var articleToReturn []Article
+	err = json.Unmarshal([]byte(articleWithThisKey), &articleToReturn)
+	if err != nil {
+		customOutput := CustomOutput{
+			Message: "An Error Occurred while trying to validate the structure of the returned Article",
+			Error:   err,
+		}
+		return c.JSONPretty(http.StatusInternalServerError, customOutput, indentJson)
+	}
+	return c.JSONPretty(http.StatusOK, articleToReturn[0], indentJson)
 }
 
 func createArticle(c echo.Context) error {
