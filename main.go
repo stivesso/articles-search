@@ -8,6 +8,7 @@ import (
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/redis/go-redis/v9"
 	"github.com/stivesso/articles-search/pkg/cache"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -166,47 +167,92 @@ func getArticleByID(c echo.Context) error {
 }
 
 func createArticle(c echo.Context) error {
-	var article Article
-	err := c.Bind(&article)
+	/*
+		Using Same function to process either  a single article or a list of articles)
+		hence not using echo.Context Bind() function, as the The c.Bind() method in Echo
+		reads the request body only once, subsequent attempts to read it will result in an EOF error
+	*/
+
+	// Read the request body into bytes
+	bodyBytes, err := io.ReadAll(c.Request().Body)
 	if err != nil {
 		customOutput := CustomOutput{
-			Message: "An Error Occurred while trying to validate the structure of article",
-			Error:   err,
-		}
-		return c.JSONPretty(http.StatusBadRequest, customOutput, indentJson)
-	}
-	// Check if article ID is valid (higher than zero)
-	if article.Id == 0 {
-		customOutput := CustomOutput{
-			Message: "The article to add must have at least an Id and that ID must be higher than zero",
-		}
-		return c.JSONPretty(http.StatusBadRequest, customOutput, indentJson)
-	}
-	// Check if article ID don't already exist
-	articleKey := fmt.Sprintf("articleKey:%d", article.Id)
-	articlesWithThisKey, err := redisClient.JSONGet(ctx, articleKey).Result()
-	if err != nil {
-		customOutput := CustomOutput{
-			Message: "An Error Occurred while trying to Check if this article already exists.",
+			Message: fmt.Sprintf("Failed to read request body"),
 			Error:   err,
 		}
 		return c.JSONPretty(http.StatusInternalServerError, customOutput, indentJson)
 	}
-	if articlesWithThisKey != "" {
-		customOutput := CustomOutput{
-			Message: fmt.Sprintf("An article with key %d already exist", article.Id),
+
+	// Try to decode the request body into a slice of Article
+	var articles []Article
+	err = json.Unmarshal(bodyBytes, &articles)
+	if err != nil {
+		// Let us check if this is a single Item
+		var article Article
+		err := json.Unmarshal(bodyBytes, &article)
+		if err != nil {
+			customOutput := CustomOutput{
+				Message: "The input provided is neither a list of articles nor a valid article. Please input either a list of articles of a single article",
+				Error:   err,
+			}
+			return c.JSONPretty(http.StatusBadRequest, customOutput, indentJson)
 		}
-		return c.JSONPretty(http.StatusBadRequest, customOutput, indentJson)
+		articles = []Article{article}
 	}
-	status, err := redisClient.JSONSet(ctx, articleKey, "$", article).Result()
+
+	// Run Validation Checks on the Article
+	var articlesSetArgs []redis.JSONSetArgs
+	for _, article := range articles {
+		// Check if article ID is valid (higher than zero)
+		if article.Id == 0 {
+			customOutput := CustomOutput{
+				Message: fmt.Sprintf("Article %v must have at least an Id and that ID must be higher than zero", article),
+			}
+			return c.JSONPretty(http.StatusBadRequest, customOutput, indentJson)
+		}
+		// Check if article ID don't already exist
+		articleKey := fmt.Sprintf("articleKey:%d", article.Id)
+		articlesWithThisKey, err := redisClient.JSONGet(ctx, articleKey).Result()
+		if err != nil {
+			customOutput := CustomOutput{
+				Message: "An Error Occurred while trying to Check if this article already exists.",
+				Error:   err,
+			}
+			return c.JSONPretty(http.StatusInternalServerError, customOutput, indentJson)
+		}
+		if articlesWithThisKey != "" {
+			customOutput := CustomOutput{
+				Message: fmt.Sprintf("An article with key %d already exist", article.Id),
+			}
+			return c.JSONPretty(http.StatusBadRequest, customOutput, indentJson)
+		}
+		// For now JSONSetArgs does not seem to marshaled back JSON
+		// Hence, we marshall this before setting as Argument
+		articleByte, err := json.Marshal(article)
+		if err != nil {
+			customOutput := CustomOutput{
+				Message: fmt.Sprintf("An Error Occurred while trying to Set article with ID %d in the Database. No Article Added", article.Id),
+				Error:   err,
+			}
+			return c.JSONPretty(http.StatusInternalServerError, customOutput, indentJson)
+		}
+		articlesSetArgs = append(articlesSetArgs, redis.JSONSetArgs{
+			Key:   articleKey,
+			Path:  "$",
+			Value: articleByte,
+		})
+	}
+
+	// Seth the result in Database, using JSONMSet
+	result, err := redisClient.JSONMSetArgs(ctx, articlesSetArgs).Result()
 	if err != nil {
 		customOutput := CustomOutput{
-			Message: "An Error Occurred while trying to Set the article in the Database.",
+			Message: "An Error Occurred while trying to Set articles in the Database.",
 			Error:   err,
 		}
 		return c.JSONPretty(http.StatusInternalServerError, customOutput, indentJson)
 	}
-	return c.JSONPretty(http.StatusOK, status, indentJson)
+	return c.JSONPretty(http.StatusOK, result, indentJson)
 }
 
 func updateArticleByID(c echo.Context) error {
