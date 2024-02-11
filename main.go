@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/go-playground/validator/v10"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/redis/go-redis/v9"
@@ -16,15 +17,15 @@ import (
 
 // Article represents the structure of an Article
 type Article struct {
-	Id      uint     `json:"id"`
-	Title   string   `json:"title"`
-	Content string   `json:"content"`
-	Author  string   `json:"author"`
-	Tags    []string `json:"tags"`
+	Id      uint     `json:"id" validate:"required"`
+	Title   string   `json:"title" validate:"required"`
+	Content string   `json:"content" validate:"omitempty"`
+	Author  string   `json:"author" validate:"omitempty"`
+	Tags    []string `json:"tags" validate:"omitempty"`
 }
 
 type CustomOutput struct {
-	Error   error  `json:"Error,omitempty"`
+	Error   string `json:"Error,omitempty"`
 	Message string `json:"Message,omitempty"`
 }
 
@@ -96,7 +97,7 @@ func getAllArticles(c echo.Context) error {
 	if err != nil && err != redis.Nil {
 		customOutput := CustomOutput{
 			Message: "An Error Occurred while trying to get All Articles",
-			Error:   err,
+			Error:   err.Error(),
 		}
 		return c.JSON(http.StatusInternalServerError, customOutput)
 	}
@@ -122,7 +123,7 @@ func getAllArticles(c echo.Context) error {
 		if err != nil {
 			customOutput := CustomOutput{
 				Message: "An Error Occurred while trying to validate the structure of the returned Article",
-				Error:   err,
+				Error:   err.Error(),
 			}
 			return c.JSONPretty(http.StatusInternalServerError, customOutput, indentJson)
 		}
@@ -143,7 +144,7 @@ func getArticleByID(c echo.Context) error {
 	if err != nil {
 		customOutput := CustomOutput{
 			Message: fmt.Sprintf("An Error Occurred while trying to get Article with key %s", id),
-			Error:   err,
+			Error:   err.Error(),
 		}
 		return c.JSONPretty(http.StatusInternalServerError, customOutput, indentJson)
 	}
@@ -159,7 +160,7 @@ func getArticleByID(c echo.Context) error {
 	if err != nil {
 		customOutput := CustomOutput{
 			Message: "An Error Occurred while trying to validate the structure of the returned Article",
-			Error:   err,
+			Error:   err.Error(),
 		}
 		return c.JSONPretty(http.StatusInternalServerError, customOutput, indentJson)
 	}
@@ -168,7 +169,7 @@ func getArticleByID(c echo.Context) error {
 
 func createArticle(c echo.Context) error {
 	/*
-		Using Same function to process either  a single article or a list of articles)
+		Using Same function to process either  a single article or a list of articles
 		hence not using echo.Context Bind() function, as the The c.Bind() method in Echo
 		reads the request body only once, subsequent attempts to read it will result in an EOF error
 	*/
@@ -178,7 +179,7 @@ func createArticle(c echo.Context) error {
 	if err != nil {
 		customOutput := CustomOutput{
 			Message: fmt.Sprintf("Failed to read request body"),
-			Error:   err,
+			Error:   err.Error(),
 		}
 		return c.JSONPretty(http.StatusInternalServerError, customOutput, indentJson)
 	}
@@ -193,7 +194,7 @@ func createArticle(c echo.Context) error {
 		if err != nil {
 			customOutput := CustomOutput{
 				Message: "The input provided is neither a list of articles nor a valid article. Please input either a list of articles of a single article",
-				Error:   err,
+				Error:   err.Error(),
 			}
 			return c.JSONPretty(http.StatusBadRequest, customOutput, indentJson)
 		}
@@ -201,12 +202,15 @@ func createArticle(c echo.Context) error {
 	}
 
 	// Run Validation Checks on the Article
+	validate := validator.New()
 	var articlesSetArgs []redis.JSONSetArgs
 	for _, article := range articles {
-		// Check if article ID is valid (higher than zero)
-		if article.Id == 0 {
+		// Validate the Article Structure (must have at least ID and Title)
+		err = validate.Struct(article)
+		if err != nil {
 			customOutput := CustomOutput{
-				Message: fmt.Sprintf("Article %v must have at least an Id and that ID must be higher than zero", article),
+				Message: fmt.Sprintf("The item %+v does not seem to have all the required fields, it must have at least an ID greater than zero and a title", article),
+				Error:   err.Error(),
 			}
 			return c.JSONPretty(http.StatusBadRequest, customOutput, indentJson)
 		}
@@ -216,7 +220,7 @@ func createArticle(c echo.Context) error {
 		if err != nil {
 			customOutput := CustomOutput{
 				Message: "An Error Occurred while trying to Check if this article already exists.",
-				Error:   err,
+				Error:   err.Error(),
 			}
 			return c.JSONPretty(http.StatusInternalServerError, customOutput, indentJson)
 		}
@@ -232,7 +236,7 @@ func createArticle(c echo.Context) error {
 		if err != nil {
 			customOutput := CustomOutput{
 				Message: fmt.Sprintf("An Error Occurred while trying to Set article with ID %d in the Database. No Article Added", article.Id),
-				Error:   err,
+				Error:   err.Error(),
 			}
 			return c.JSONPretty(http.StatusInternalServerError, customOutput, indentJson)
 		}
@@ -248,7 +252,7 @@ func createArticle(c echo.Context) error {
 	if err != nil {
 		customOutput := CustomOutput{
 			Message: "An Error Occurred while trying to Set articles in the Database.",
-			Error:   err,
+			Error:   err.Error(),
 		}
 		return c.JSONPretty(http.StatusInternalServerError, customOutput, indentJson)
 	}
@@ -262,7 +266,7 @@ func updateArticleByID(c echo.Context) error {
 	if err != nil {
 		customOutput := CustomOutput{
 			Message: "An Error Occurred while trying to validate the structure of article",
-			Error:   err,
+			Error:   err.Error(),
 		}
 		return c.JSONPretty(http.StatusBadRequest, customOutput, indentJson)
 	}
@@ -271,7 +275,7 @@ func updateArticleByID(c echo.Context) error {
 	if err != nil || intId <= 0 {
 		customOutput := CustomOutput{
 			Message: "An Error Occurred while checking if the provided id is a number that is greater than zero, please make sure to provide a valid ID",
-			Error:   err,
+			Error:   err.Error(),
 		}
 		return c.JSONPretty(http.StatusBadRequest, customOutput, indentJson)
 	}
@@ -289,7 +293,7 @@ func updateArticleByID(c echo.Context) error {
 	if err != nil {
 		customOutput := CustomOutput{
 			Message: "An Error Occurred while trying to Check if this article already exists.",
-			Error:   err,
+			Error:   err.Error(),
 		}
 		return c.JSONPretty(http.StatusInternalServerError, customOutput, indentJson)
 	}
@@ -298,7 +302,7 @@ func updateArticleByID(c echo.Context) error {
 	if err != nil {
 		customOutput := CustomOutput{
 			Message: fmt.Sprintf("An Error Occured while trying to Update Article with id %d", article.Id),
-			Error:   err,
+			Error:   err.Error(),
 		}
 		return c.JSONPretty(http.StatusInternalServerError, customOutput, indentJson)
 	}
@@ -314,7 +318,7 @@ func deleteArticleByID(c echo.Context) error {
 	if err != nil {
 		customOutput := CustomOutput{
 			Message: fmt.Sprintf("An Error Occured while trying to Delete Articles with id %s", id),
-			Error:   err,
+			Error:   err.Error(),
 		}
 		return c.JSONPretty(http.StatusInternalServerError, customOutput, indentJson)
 	}
