@@ -297,6 +297,18 @@ func updateArticleByID(c echo.Context) error {
 		}
 		return c.JSONPretty(http.StatusInternalServerError, customOutput, indentJson)
 	}
+
+	// Validate the provided article
+	validate := validator.New()
+	err = validate.Struct(article)
+	if err != nil {
+		customOutput := CustomOutput{
+			Message: fmt.Sprintf("The item %+v does not seem to have all the required fields, it must have at least an ID greater than zero and a title", article),
+			Error:   err.Error(),
+		}
+		return c.JSONPretty(http.StatusBadRequest, customOutput, indentJson)
+	}
+
 	// Update the article
 	_, err = redisClient.JSONSet(ctx, articleKey, "$", article).Result()
 	if err != nil {
