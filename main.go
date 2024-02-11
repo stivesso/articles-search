@@ -12,6 +12,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"reflect"
+	"slices"
 	"strconv"
 )
 
@@ -32,6 +34,7 @@ type CustomOutput struct {
 var redisClient *redis.Client // Global Redis Client Variable
 var indentJson = "  "
 var ctx = context.Background()
+var searchIndexName = "idx_articles"
 
 func main() {
 
@@ -65,7 +68,7 @@ func main() {
 	e.POST("/article", createArticle)
 	e.PUT("/article/:id", updateArticleByID)
 	e.DELETE("/article/:id", deleteArticleByID)
-	//e.GET("/articles/search", searchArticles)
+	e.GET("/articles/search", searchArticles)
 
 	// Start the server
 	err = e.Start(":8080")
@@ -155,7 +158,7 @@ func getArticleByID(c echo.Context) error {
 		return c.JSONPretty(http.StatusInternalServerError, customOutput, indentJson)
 	}
 	// Let's deserialize this back, to validate the structure (which also rids of the extra backslashes)
-	var articleToReturn []Article
+	var articleToReturn Article
 	err = json.Unmarshal([]byte(articleWithThisKey), &articleToReturn)
 	if err != nil {
 		customOutput := CustomOutput{
@@ -164,7 +167,7 @@ func getArticleByID(c echo.Context) error {
 		}
 		return c.JSONPretty(http.StatusInternalServerError, customOutput, indentJson)
 	}
-	return c.JSONPretty(http.StatusOK, articleToReturn[0], indentJson)
+	return c.JSONPretty(http.StatusOK, articleToReturn, indentJson)
 }
 
 func createArticle(c echo.Context) error {
@@ -338,4 +341,49 @@ func deleteArticleByID(c echo.Context) error {
 		Message: fmt.Sprintf("Article with id %s succesfully deleted", id),
 	}
 	return c.JSONPretty(http.StatusOK, customOutput, indentJson)
+}
+
+func searchArticles(c echo.Context) error {
+
+	// Using reflect here to Get the list of expected parameters from Article Type
+	// Using the JSON Tag
+	articleParams := Article{}
+	t := reflect.TypeOf(articleParams)
+	var expectedParams []string
+	for i := 0; i < t.NumField(); i++ {
+		tag := t.Field(i).Tag.Get("json")
+		expectedParams = append(expectedParams, tag)
+	}
+
+	// Check that the provided parameters are in expected Parameters
+	providedParams := c.QueryParams()
+	if len(providedParams) == 0 {
+		customOutput := CustomOutput{
+			Message: fmt.Sprintf("You must provide at least one of the following parameter: %v", expectedParams),
+		}
+		return c.JSONPretty(http.StatusBadRequest, customOutput, indentJson)
+	}
+	for param, _ := range providedParams {
+		if !slices.Contains(expectedParams, param) {
+			customOutput := CustomOutput{
+				Message: fmt.Sprintf("%s query provided is not one of the following parameter: %v. Please provide a valid query", param, expectedParams),
+			}
+			return c.JSONPretty(http.StatusBadRequest, customOutput, indentJson)
+		}
+	}
+
+	// Build the Search Query
+	var queries []interface{}
+	for param, fieldToSearrch := range providedParams {
+		queries = append(queries, []string{searchIndexName, param, fieldToSearrch[0]})
+	}
+	result, err := redisClient.Do(ctx, queries...).Result()
+	if err != nil {
+		customOutput := CustomOutput{
+			Message: "An Error Occured while trying to Get Result for this search",
+			Error:   err.Error(),
+		}
+		return c.JSONPretty(http.StatusInternalServerError, customOutput, indentJson)
+	}
+	return c.JSONPretty(http.StatusOK, result, indentJson)
 }
