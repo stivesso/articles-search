@@ -373,11 +373,23 @@ func searchArticles(c echo.Context) error {
 	}
 
 	// Build the Search Query
-	var queries []interface{}
-	for param, fieldToSearrch := range providedParams {
-		queries = append(queries, []string{searchIndexName, param, fieldToSearrch[0]})
+	var queries []any
+	queries = append(queries, "FT.SEARCH", searchIndexName)
+	for param, fieldToSearch := range providedParams {
+		args := []any{fmt.Sprintf("@%s:%s", param, fieldToSearch[0])}
+		queries = append(queries, args...)
 	}
+
+	/*
+		Run query FT.SEARCH
+		https://redis.io/commands/ft.search/
+		FT.SEARCH returns an array reply, where the first element is an integer reply
+		of the total number of results, and then array reply pairs of document ids,
+		and array replies of attribute/value pairs
+			In other words, it returns [totalItems, keys, [path, Articles], keys, [path, Articles], keys, [path, Articles]...]
+	*/
 	result, err := redisClient.Do(ctx, queries...).Result()
+	fmt.Printf("%v\n\n", result)
 	if err != nil {
 		customOutput := CustomOutput{
 			Message: "An Error Occured while trying to Get Result for this search",
@@ -385,5 +397,43 @@ func searchArticles(c echo.Context) error {
 		}
 		return c.JSONPretty(http.StatusInternalServerError, customOutput, indentJson)
 	}
-	return c.JSONPretty(http.StatusOK, result, indentJson)
+
+	// Generic Error
+	customOutputUnknownFormat := CustomOutput{
+		Message: fmt.Sprintf("Database Returned an unexpected format type when Searching with parameter %v", providedParams),
+	}
+
+	// Process Results
+	replies, ok := result.(map[interface{}]interface{})
+	if !ok || len(replies) < 1 {
+		return c.JSONPretty(http.StatusInternalServerError, customOutputUnknownFormat, indentJson)
+	}
+
+	totalResults, ok := replies["total_results"].(int64)
+	fmt.Printf("%v", replies)
+	if !ok {
+		return c.JSONPretty(http.StatusInternalServerError, customOutputUnknownFormat, indentJson)
+	}
+
+	if totalResults <= 0 {
+		customOutput := CustomOutput{
+			Message: "Search completed, but no article found with the search criteria",
+		}
+		return c.JSONPretty(http.StatusOK, customOutput, indentJson)
+	}
+
+	// Number of elements in the replies must be 3 times the totalResults
+	if len(replies) != int(totalResults*3) {
+		return c.JSONPretty(http.StatusInternalServerError, customOutputUnknownFormat, indentJson)
+	}
+
+	// Let's put all keys and articles tuple in a slice
+	/*
+		allKeysAndArticles := replies[1:]
+		var arrayTupleKeysArticles [][]any
+		for i := 0; i < len(allKeysAndArticles); i += 2 {
+			arrayTupleKeysArticles = append(arrayTupleKeysArticles, allKeysAndArticles[i:i+2])
+		}*/
+
+	return c.JSONPretty(http.StatusOK, nil, indentJson)
 }
