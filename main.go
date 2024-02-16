@@ -5,11 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/go-playground/validator/v10"
-	"github.com/labstack/echo/v4"
-	"github.com/labstack/echo/v4/middleware"
 	"github.com/redis/go-redis/v9"
 	"github.com/stivesso/articles-search/pkg/cache"
 	"io"
+	"log"
 	"log/slog"
 	"net/http"
 	"reflect"
@@ -35,6 +34,7 @@ var redisClient *redis.Client // Global Redis Client Variable
 var indentJson = "  "
 var ctx = context.Background()
 var searchIndexName = "idx_articles"
+var validate = validator.New()
 
 func main() {
 
@@ -55,29 +55,37 @@ func main() {
 		}
 	}()
 
-	// Setup Echo Web Framework
-	e := echo.New()
-
-	// Middleware
-	e.Use(middleware.Logger())
-	e.Use(middleware.Recover())
+	// Setup http serveMux
+	mux := http.NewServeMux()
 
 	// Routes
-	e.GET("/articles", getAllArticles)
-	e.GET("/article/:id", getArticleByID)
-	e.POST("/article", createArticle)
-	e.PUT("/article/:id", updateArticleByID)
-	e.DELETE("/article/:id", deleteArticleByID)
-	e.GET("/articles/search", searchArticles)
+	mux.HandleFunc("GET /articles", getAllArticles)
+	mux.HandleFunc("GET /articles/{id}", getArticleByID)
+	mux.HandleFunc("POST /article", createArticle)
+	mux.HandleFunc("PUT /article/{id}", updateArticleByID)
+	mux.HandleFunc("DELETE /article/{id}", deleteArticleByID)
+	mux.HandleFunc("GET /articles/search", searchArticles)
 
 	// Start the server
-	err = e.Start(":8080")
-	if err != nil {
-		panic(err)
-	}
+	serverAddress := ":8080"
+	slog.Info(fmt.Sprintf("Starting HTTP Server on Address %s", serverAddress))
+	log.Fatal(http.ListenAndServe(serverAddress, mux))
 }
 
-func getAllArticles(c echo.Context) error {
+// Give me an interface 'v' that can be render as JSON and a statusCode
+// and I will writes it as a response into the http Response Writer w
+func responseJSON(w http.ResponseWriter, v interface{}, statusCode int) {
+	js, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(statusCode)
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(js)
+}
+
+func getAllArticles(w http.ResponseWriter, r *http.Request) {
 	// First retrieve all Article keys using SCAN
 	var articleKeys []string
 	iter := redisClient.Scan(ctx, 0, "articleKey:*", 0).Iterator()
@@ -91,7 +99,8 @@ func getAllArticles(c echo.Context) error {
 		customOutput := CustomOutput{
 			Message: "No Item found",
 		}
-		return c.JSON(http.StatusNotFound, customOutput)
+		responseJSON(w, customOutput, http.StatusNotFound)
+		return
 	}
 
 	// Build the article List, using MGET here to get all Keys, result is an array of JSONGet response
@@ -102,13 +111,15 @@ func getAllArticles(c echo.Context) error {
 			Message: "An Error Occurred while trying to get All Articles",
 			Error:   err.Error(),
 		}
-		return c.JSON(http.StatusInternalServerError, customOutput)
+		responseJSON(w, customOutput, http.StatusInternalServerError)
+		return
 	}
 	if err == redis.Nil {
 		customOutput := CustomOutput{
 			Message: "No Item found",
 		}
-		return c.JSON(http.StatusNotFound, customOutput)
+		responseJSON(w, customOutput, http.StatusNotFound)
+		return
 	}
 
 	// Loop on each element in the array and append its first element to the result after validation
@@ -120,7 +131,8 @@ func getAllArticles(c echo.Context) error {
 			customOutput := CustomOutput{
 				Message: "An Error Occurred while trying to get All Articles, Article returned were not in the correct format",
 			}
-			return c.JSON(http.StatusInternalServerError, customOutput)
+			responseJSON(w, customOutput, http.StatusInternalServerError)
+			return
 		}
 		err = json.Unmarshal([]byte(responseArticle), &resultForThisArticle)
 		if err != nil {
@@ -128,36 +140,41 @@ func getAllArticles(c echo.Context) error {
 				Message: "An Error Occurred while trying to validate the structure of the returned Article",
 				Error:   err.Error(),
 			}
-			return c.JSONPretty(http.StatusInternalServerError, customOutput, indentJson)
+			responseJSON(w, customOutput, http.StatusInternalServerError)
+			return
 		}
 		result = append(result, resultForThisArticle[0])
 	}
-	return c.JSONPretty(http.StatusOK, result, indentJson)
+
+	responseJSON(w, result, http.StatusOK)
 }
 
-func getArticleByID(c echo.Context) error {
-	id := c.Param("id")
+func getArticleByID(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
 	articleWithThisKey, err := redisClient.JSONGet(ctx, fmt.Sprintf("articleKey:%s", id)).Result()
 	if err == redis.Nil {
 		customOutput := CustomOutput{
 			Message: "No Item found",
 		}
-		return c.JSON(http.StatusNotFound, customOutput)
+		responseJSON(w, customOutput, http.StatusNotFound)
+		return
 	}
 	if err != nil {
 		customOutput := CustomOutput{
 			Message: fmt.Sprintf("An Error Occurred while trying to get Article with key %s", id),
 			Error:   err.Error(),
 		}
-		return c.JSONPretty(http.StatusInternalServerError, customOutput, indentJson)
+		responseJSON(w, customOutput, http.StatusInternalServerError)
 	}
 	if articleWithThisKey == "" {
 		customOutput := CustomOutput{
 			Message: fmt.Sprintf("No Article with ID %s found", id),
 		}
-		return c.JSONPretty(http.StatusInternalServerError, customOutput, indentJson)
+		responseJSON(w, customOutput, http.StatusInternalServerError)
+		return
 	}
-	// Let's deserialize this back, to validate the structure (which also rids of the extra backslashes)
+
+	// Let's deserialize this back, that also validate the structure and rids of the extra backslashes
 	var articleToReturn Article
 	err = json.Unmarshal([]byte(articleWithThisKey), &articleToReturn)
 	if err != nil {
@@ -165,12 +182,13 @@ func getArticleByID(c echo.Context) error {
 			Message: "An Error Occurred while trying to validate the structure of the returned Article",
 			Error:   err.Error(),
 		}
-		return c.JSONPretty(http.StatusInternalServerError, customOutput, indentJson)
+		responseJSON(w, customOutput, http.StatusInternalServerError)
+		return
 	}
-	return c.JSONPretty(http.StatusOK, articleToReturn, indentJson)
+	responseJSON(w, articleToReturn, http.StatusOK)
 }
 
-func createArticle(c echo.Context) error {
+func createArticle(w http.ResponseWriter, r *http.Request) {
 	/*
 		Using Same function to process either  a single article or a list of articles
 		hence not using echo.Context Bind() function, as the The c.Bind() method in Echo
@@ -178,13 +196,14 @@ func createArticle(c echo.Context) error {
 	*/
 
 	// Read the request body into bytes
-	bodyBytes, err := io.ReadAll(c.Request().Body)
+	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
 		customOutput := CustomOutput{
 			Message: fmt.Sprintf("Failed to read request body"),
 			Error:   err.Error(),
 		}
-		return c.JSONPretty(http.StatusInternalServerError, customOutput, indentJson)
+		responseJSON(w, customOutput, http.StatusInternalServerError)
+		return
 	}
 
 	// Try to decode the request body into a slice of Article
@@ -199,13 +218,13 @@ func createArticle(c echo.Context) error {
 				Message: "The input provided is neither a list of articles nor a valid article. Please input either a list of articles of a single article",
 				Error:   err.Error(),
 			}
-			return c.JSONPretty(http.StatusBadRequest, customOutput, indentJson)
+			responseJSON(w, customOutput, http.StatusBadRequest)
+			return
 		}
 		articles = []Article{article}
 	}
 
 	// Run Validation Checks on the Article
-	validate := validator.New()
 	var articlesSetArgs []redis.JSONSetArgs
 	for _, article := range articles {
 		// Validate the Article Structure (must have at least ID and Title)
@@ -215,7 +234,8 @@ func createArticle(c echo.Context) error {
 				Message: fmt.Sprintf("The item %+v does not seem to have all the required fields, it must have at least an ID greater than zero and a title", article),
 				Error:   err.Error(),
 			}
-			return c.JSONPretty(http.StatusBadRequest, customOutput, indentJson)
+			responseJSON(w, customOutput, http.StatusBadRequest)
+			return
 		}
 		// Check if article ID don't already exist
 		articleKey := fmt.Sprintf("articleKey:%d", article.Id)
@@ -225,13 +245,15 @@ func createArticle(c echo.Context) error {
 				Message: "An Error Occurred while trying to Check if this article already exists.",
 				Error:   err.Error(),
 			}
-			return c.JSONPretty(http.StatusInternalServerError, customOutput, indentJson)
+			responseJSON(w, customOutput, http.StatusInternalServerError)
+			return
 		}
 		if articlesWithThisKey != "" {
 			customOutput := CustomOutput{
 				Message: fmt.Sprintf("An article with key %d already exist", article.Id),
 			}
-			return c.JSONPretty(http.StatusBadRequest, customOutput, indentJson)
+			responseJSON(w, customOutput, http.StatusBadRequest)
+			return
 		}
 		// For now JSONSetArgs does not seem to marshaled back JSON
 		// Hence, we marshall this before setting as Argument
@@ -241,7 +263,8 @@ func createArticle(c echo.Context) error {
 				Message: fmt.Sprintf("An Error Occurred while trying to Set article with ID %d in the Database. No Article Added", article.Id),
 				Error:   err.Error(),
 			}
-			return c.JSONPretty(http.StatusInternalServerError, customOutput, indentJson)
+			responseJSON(w, customOutput, http.StatusInternalServerError)
+			return
 		}
 		articlesSetArgs = append(articlesSetArgs, redis.JSONSetArgs{
 			Key:   articleKey,
@@ -257,22 +280,39 @@ func createArticle(c echo.Context) error {
 			Message: "An Error Occurred while trying to Set articles in the Database.",
 			Error:   err.Error(),
 		}
-		return c.JSONPretty(http.StatusInternalServerError, customOutput, indentJson)
+		responseJSON(w, customOutput, http.StatusInternalServerError)
+		return
 	}
-	return c.JSONPretty(http.StatusOK, result, indentJson)
+	responseJSON(w, result, http.StatusOK)
 }
 
-func updateArticleByID(c echo.Context) error {
-	var article Article
-	err := c.Bind(&article)
-	id := c.Param("id")
+func updateArticleByID(w http.ResponseWriter, r *http.Request) {
+
+	// Read the request body into bytes
+	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
 		customOutput := CustomOutput{
-			Message: "An Error Occurred while trying to validate the structure of article",
+			Message: fmt.Sprintf("Failed to read request body"),
 			Error:   err.Error(),
 		}
-		return c.JSONPretty(http.StatusBadRequest, customOutput, indentJson)
+		responseJSON(w, customOutput, http.StatusInternalServerError)
+		return
 	}
+
+	id := r.PathValue("id")
+
+	// Try to decode the request body into an Article
+	var article Article
+	err = json.Unmarshal(bodyBytes, &article)
+	if err != nil {
+		customOutput := CustomOutput{
+			Message: "The input provided is not a valid article. Please input either a valid article",
+			Error:   err.Error(),
+		}
+		responseJSON(w, customOutput, http.StatusBadRequest)
+		return
+	}
+
 	// Make sure the ID is set on the updated Article
 	intId, err := strconv.Atoi(id)
 	if err != nil || intId <= 0 {
@@ -280,7 +320,8 @@ func updateArticleByID(c echo.Context) error {
 			Message: "An Error Occurred while checking if the provided id is a number that is greater than zero, please make sure to provide a valid ID",
 			Error:   err.Error(),
 		}
-		return c.JSONPretty(http.StatusBadRequest, customOutput, indentJson)
+		responseJSON(w, customOutput, http.StatusBadRequest)
+		return
 	}
 	article.Id = uint(intId)
 
@@ -291,14 +332,16 @@ func updateArticleByID(c echo.Context) error {
 		customOutput := CustomOutput{
 			Message: fmt.Sprintf("No article with key %d exists", article.Id),
 		}
-		return c.JSONPretty(http.StatusBadRequest, customOutput, indentJson)
+		responseJSON(w, customOutput, http.StatusBadRequest)
+		return
 	}
 	if err != nil {
 		customOutput := CustomOutput{
 			Message: "An Error Occurred while trying to Check if this article already exists.",
 			Error:   err.Error(),
 		}
-		return c.JSONPretty(http.StatusInternalServerError, customOutput, indentJson)
+		responseJSON(w, customOutput, http.StatusInternalServerError)
+		return
 	}
 
 	// Validate the provided article
@@ -309,7 +352,8 @@ func updateArticleByID(c echo.Context) error {
 			Message: fmt.Sprintf("The item %+v does not seem to have all the required fields, it must have at least an ID greater than zero and a title", article),
 			Error:   err.Error(),
 		}
-		return c.JSONPretty(http.StatusBadRequest, customOutput, indentJson)
+		responseJSON(w, customOutput, http.StatusBadRequest)
+		return
 	}
 
 	// Update the article
@@ -319,31 +363,33 @@ func updateArticleByID(c echo.Context) error {
 			Message: fmt.Sprintf("An Error Occured while trying to Update Article with id %d", article.Id),
 			Error:   err.Error(),
 		}
-		return c.JSONPretty(http.StatusInternalServerError, customOutput, indentJson)
+		responseJSON(w, customOutput, http.StatusInternalServerError)
+		return
 	}
 	customOutput := CustomOutput{
 		Message: fmt.Sprintf("Article with id %d succesfully updated", article.Id),
 	}
-	return c.JSONPretty(http.StatusOK, customOutput, indentJson)
+	responseJSON(w, customOutput, http.StatusOK)
 }
 
-func deleteArticleByID(c echo.Context) error {
-	id := c.Param("id")
+func deleteArticleByID(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
 	_, err := redisClient.Del(ctx, fmt.Sprintf("articleKey:%s", id)).Result()
 	if err != nil {
 		customOutput := CustomOutput{
 			Message: fmt.Sprintf("An Error Occured while trying to Delete Articles with id %s", id),
 			Error:   err.Error(),
 		}
-		return c.JSONPretty(http.StatusInternalServerError, customOutput, indentJson)
+		responseJSON(w, customOutput, http.StatusInternalServerError)
+		return
 	}
 	customOutput := CustomOutput{
 		Message: fmt.Sprintf("Article with id %s succesfully deleted", id),
 	}
-	return c.JSONPretty(http.StatusOK, customOutput, indentJson)
+	responseJSON(w, customOutput, http.StatusOK)
 }
 
-func searchArticles(c echo.Context) error {
+func searchArticles(w http.ResponseWriter, r *http.Request) {
 
 	// Using reflect here to Get the list of expected parameters from Article Type
 	// Using the JSON Tag
@@ -356,19 +402,21 @@ func searchArticles(c echo.Context) error {
 	}
 
 	// Check that the provided parameters are in expected Parameters
-	providedParams := c.QueryParams()
+	providedParams := r.URL.Query()
 	if len(providedParams) == 0 {
 		customOutput := CustomOutput{
 			Message: fmt.Sprintf("You must provide at least one of the following parameter: %v", expectedParams),
 		}
-		return c.JSONPretty(http.StatusBadRequest, customOutput, indentJson)
+		responseJSON(w, customOutput, http.StatusBadRequest)
+		return
 	}
 	for param, _ := range providedParams {
 		if !slices.Contains(expectedParams, param) {
 			customOutput := CustomOutput{
 				Message: fmt.Sprintf("%s query provided is not one of the following parameter: %v. Please provide a valid query", param, expectedParams),
 			}
-			return c.JSONPretty(http.StatusBadRequest, customOutput, indentJson)
+			responseJSON(w, customOutput, http.StatusBadRequest)
+			return
 		}
 	}
 
@@ -395,7 +443,8 @@ func searchArticles(c echo.Context) error {
 			Message: "An Error Occured while trying to Get Result for this search",
 			Error:   err.Error(),
 		}
-		return c.JSONPretty(http.StatusInternalServerError, customOutput, indentJson)
+		responseJSON(w, customOutput, http.StatusInternalServerError)
+		return
 	}
 
 	// Generic Error
@@ -406,25 +455,29 @@ func searchArticles(c echo.Context) error {
 	// Process Results
 	replies, ok := result.(map[interface{}]interface{})
 	if !ok || len(replies) < 1 {
-		return c.JSONPretty(http.StatusInternalServerError, customOutputUnknownFormat, indentJson)
+		responseJSON(w, customOutputUnknownFormat, http.StatusInternalServerError)
+		return
 	}
 
 	totalResults, ok := replies["total_results"].(int64)
 	fmt.Printf("%v", replies)
 	if !ok {
-		return c.JSONPretty(http.StatusInternalServerError, customOutputUnknownFormat, indentJson)
+		responseJSON(w, customOutputUnknownFormat, http.StatusInternalServerError)
+		return
 	}
 
 	if totalResults <= 0 {
 		customOutput := CustomOutput{
 			Message: "Search completed, but no article found with the search criteria",
 		}
-		return c.JSONPretty(http.StatusOK, customOutput, indentJson)
+		responseJSON(w, customOutput, http.StatusOK)
+		return
 	}
 
 	// Number of elements in the replies must be 3 times the totalResults
 	if len(replies) != int(totalResults*3) {
-		return c.JSONPretty(http.StatusInternalServerError, customOutputUnknownFormat, indentJson)
+		responseJSON(w, customOutputUnknownFormat, http.StatusInternalServerError)
+		return
 	}
 
 	// Let's put all keys and articles tuple in a slice
@@ -435,5 +488,5 @@ func searchArticles(c echo.Context) error {
 			arrayTupleKeysArticles = append(arrayTupleKeysArticles, allKeysAndArticles[i:i+2])
 		}*/
 
-	return c.JSONPretty(http.StatusOK, nil, indentJson)
+	responseJSON(w, nil, http.StatusOK)
 }
