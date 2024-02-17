@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"github.com/go-playground/validator/v10"
 	"github.com/redis/go-redis/v9"
-	"github.com/stivesso/articles-search/pkg/cache"
 	"io"
 	"log"
 	"log/slog"
@@ -16,7 +15,7 @@ import (
 	"strconv"
 )
 
-// Article represents the structure of an Article
+// Article represents the structure of an Article.
 type Article struct {
 	Id      uint     `json:"id" validate:"required"`
 	Title   string   `json:"title" validate:"required"`
@@ -25,122 +24,139 @@ type Article struct {
 	Tags    []string `json:"tags" validate:"omitempty"`
 }
 
+// CustomOutput for standardized error and message responses.
 type CustomOutput struct {
-	Error   string `json:"Error,omitempty"`
-	Message string `json:"Message,omitempty"`
+	Error   string `json:"error,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
-var redisClient *redis.Client // Global Redis Client Variable
-var indentJson = "  "
-var ctx = context.Background()
-var searchIndexName = "idx_articles"
-var validate = validator.New()
+var (
+	redisClient     *redis.Client
+	ctx                                 = context.Background()
+	validate        *validator.Validate = validator.New()
+	searchIndexName                     = "idx_articles"
+)
 
 func main() {
-
-	var err error
-	// Connect to Redis
-	slog.Info("Connecting to Redis")
-	redisClient, err = cache.NewRedisClient("192.168.64.7", 30183, "", 0)
+	// Initialize Redis client.
+	err := initializeRedis()
 	if err != nil {
-		panic(err)
+		log.Fatalf("Failed to connect to Redis: %v", err)
 	}
 
-	// Defer Closing Redis Client
-	defer func() {
-		slog.Info("Closing redisClient")
-		err := redisClient.Close()
-		if err != nil {
-			slog.Error("Unable to Close Redis", "Error", err)
-		}
-	}()
+	// Setup HTTP server and routes.
+	setupHTTPServer()
+}
 
-	// Setup http serveMux
+func initializeRedis() error {
+	var err error
+	redisClient, err = NewRedisClient("192.168.64.7", 30183, "", 0)
+	return err
+}
+
+func NewRedisClient(dbHost string, dbPort int, dbPassword string, dbRedis int) (*redis.Client, error) {
+	client := redis.NewClient(&redis.Options{
+		Addr:     fmt.Sprintf("%s:%d", dbHost, dbPort),
+		Password: dbPassword, //For this test, not setting Authentication
+		DB:       dbRedis,    // For this Te
+	})
+	// Ping the redis server to check connection
+	_, err := client.Ping(context.Background()).Result()
+	return client, err
+}
+
+func setupHTTPServer() {
 	mux := http.NewServeMux()
 
-	// Routes
+	// Define routes using pattern matching for IDs.
 	mux.HandleFunc("GET /articles", getAllArticles)
-	mux.HandleFunc("GET /articles/{id}", getArticleByID)
+	mux.HandleFunc("GET /article/{id}", getArticleByID)
 	mux.HandleFunc("POST /article", createArticle)
 	mux.HandleFunc("PUT /article/{id}", updateArticleByID)
 	mux.HandleFunc("DELETE /article/{id}", deleteArticleByID)
 	mux.HandleFunc("GET /articles/search", searchArticles)
 
-	// Start the server
 	serverAddress := ":8080"
-	slog.Info(fmt.Sprintf("Starting HTTP Server on Address %s", serverAddress))
-	log.Fatal(http.ListenAndServe(serverAddress, mux))
+	slog.Info(fmt.Sprintf("Starting HTTP Server on address %s\n", serverAddress))
+	if err := http.ListenAndServe(serverAddress, mux); err != nil {
+		log.Fatalf("Failed to start HTTP server: %v", err)
+	}
 }
 
-// Give me an interface 'v' that can be render as JSON and a statusCode
-// and I will writes it as a response into the http Response Writer w
+// responseJSON simplifies JSON response writing.
 func responseJSON(w http.ResponseWriter, v interface{}, statusCode int) {
-	js, err := json.MarshalIndent(v, "", "  ")
+	jsonResp, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(statusCode)
 	w.Header().Set("Content-Type", "application/json")
-	w.Write(js)
+	nbrBytesWritten, err := w.Write(jsonResp)
+	if err != nil {
+		slog.Error("Unable to write the following response", "response", jsonResp, "lenght_response", nbrBytesWritten)
+	}
 }
 
+// handleError simplifies error handling and response.
+func handleError(w http.ResponseWriter, errMsg string, err error, statusCode int) {
+	//Logging any 5xx error
+	if statusCode >= http.StatusInternalServerError {
+		slog.Error(errMsg, "Error:", err)
+	}
+	responseJSON(w, CustomOutput{Error: err.Error(), Message: errMsg}, statusCode)
+}
+
+/*
+Handlers Functions
+*/
+
 func getAllArticles(w http.ResponseWriter, r *http.Request) {
-	// First retrieve all Article keys using SCAN
-	var articleKeys []string
-	iter := redisClient.Scan(ctx, 0, "articleKey:*", 0).Iterator()
+	// Assuming articles are stored with a known prefix in their keys, e.g., "article:"
+	prefix := "article:"
+	var keys []string
+	var articles []Article
+
+	// Use Scan to efficiently iterate through keys with the specified prefix.
+	iter := redisClient.Scan(ctx, 0, prefix+"*", 0).Iterator()
 	for iter.Next(ctx) {
-		articleKeys = append(articleKeys, iter.Val())
+		keys = append(keys, iter.Val())
 	}
 	if err := iter.Err(); err != nil {
-		panic(err)
-	}
-	if len(articleKeys) == 0 {
-		customOutput := CustomOutput{
-			Message: "No Item found",
-		}
-		responseJSON(w, customOutput, http.StatusNotFound)
+		handleError(w, "Failed to retrieve article keys from Redis", err, http.StatusInternalServerError)
 		return
 	}
 
-	// Build the article List, using MGET here to get all Keys, result is an array of JSONGet response
-	// JSONGet responses are themselves array containing Response
-	retrievedArticleArray, err := redisClient.JSONMGet(ctx, "$", articleKeys...).Result()
+	if len(keys) == 0 {
+		// No articles found, return an empty list with HTTP 200 OK.
+		responseJSON(w, articles, http.StatusOK)
+		return
+	}
+
+	// Retrieve article details for each key
+	resultMget, err := redisClient.JSONMGet(ctx, "$", keys...).Result()
 	if err != nil && err != redis.Nil {
-		customOutput := CustomOutput{
-			Message: "An Error Occurred while trying to get All Articles",
-			Error:   err.Error(),
-		}
-		responseJSON(w, customOutput, http.StatusInternalServerError)
+		handleError(w, "An Error Occurred while Getting Articles", err, http.StatusInternalServerError)
 		return
 	}
 	if err == redis.Nil {
-		customOutput := CustomOutput{
-			Message: "No Item found",
-		}
-		responseJSON(w, customOutput, http.StatusNotFound)
+		// No articles found, return an empty list with HTTP 200 OK.
+		responseJSON(w, articles, http.StatusOK)
 		return
 	}
 
 	// Loop on each element in the array and append its first element to the result after validation
 	var result []Article
-	for _, responseRetrievedArticle := range retrievedArticleArray {
+	for _, responseRetrievedArticle := range resultMget {
 		var resultForThisArticle []Article
 		responseArticle, isString := responseRetrievedArticle.(string)
 		if !isString {
-			customOutput := CustomOutput{
-				Message: "An Error Occurred while trying to get All Articles, Article returned were not in the correct format",
-			}
-			responseJSON(w, customOutput, http.StatusInternalServerError)
+			handleError(w, "An Error Occurred while Getting Articles", fmt.Errorf("article returned in incorrect format"), http.StatusInternalServerError)
 			return
 		}
 		err = json.Unmarshal([]byte(responseArticle), &resultForThisArticle)
 		if err != nil {
-			customOutput := CustomOutput{
-				Message: "An Error Occurred while trying to validate the structure of the returned Article",
-				Error:   err.Error(),
-			}
-			responseJSON(w, customOutput, http.StatusInternalServerError)
+			handleError(w, "Unable to validate the structure of returned Article", err, http.StatusInternalServerError)
 			return
 		}
 		result = append(result, resultForThisArticle[0])
@@ -151,123 +167,88 @@ func getAllArticles(w http.ResponseWriter, r *http.Request) {
 
 func getArticleByID(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	articleWithThisKey, err := redisClient.JSONGet(ctx, fmt.Sprintf("articleKey:%s", id)).Result()
+	// Build the Redis key using the article ID. Assuming key format: "article:{id}"
+	key := fmt.Sprintf("article:%s", id)
+
+	// Retrieve the article from Redis.
+	result, err := redisClient.JSONGet(ctx, key).Result()
 	if err == redis.Nil {
-		customOutput := CustomOutput{
-			Message: "No Item found",
-		}
-		responseJSON(w, customOutput, http.StatusNotFound)
+		// Article not found, respond with HTTP 404 Not Found.
+		handleError(w, fmt.Sprintf("No article found with ID %s", id), nil, http.StatusNotFound)
 		return
-	}
-	if err != nil {
-		customOutput := CustomOutput{
-			Message: fmt.Sprintf("An Error Occurred while trying to get Article with key %s", id),
-			Error:   err.Error(),
-		}
-		responseJSON(w, customOutput, http.StatusInternalServerError)
-	}
-	if articleWithThisKey == "" {
-		customOutput := CustomOutput{
-			Message: fmt.Sprintf("No Article with ID %s found", id),
-		}
-		responseJSON(w, customOutput, http.StatusInternalServerError)
+	} else if err != nil {
+		// Handle unexpected Redis errors.
+		handleError(w, "Failed to retrieve article from Redis", err, http.StatusInternalServerError)
 		return
 	}
 
-	// Let's deserialize this back, that also validate the structure and rids of the extra backslashes
-	var articleToReturn Article
-	err = json.Unmarshal([]byte(articleWithThisKey), &articleToReturn)
-	if err != nil {
-		customOutput := CustomOutput{
-			Message: "An Error Occurred while trying to validate the structure of the returned Article",
-			Error:   err.Error(),
-		}
-		responseJSON(w, customOutput, http.StatusInternalServerError)
+	// Unmarshal the article JSON into the Article struct.
+	var article Article
+	if err := json.Unmarshal([]byte(result), &article); err != nil {
+		handleError(w, "Failed to parse article data", err, http.StatusInternalServerError)
 		return
 	}
-	responseJSON(w, articleToReturn, http.StatusOK)
+
+	// Return the article as JSON.
+	responseJSON(w, article, http.StatusOK)
 }
 
 func createArticle(w http.ResponseWriter, r *http.Request) {
-	/*
-		Using Same function to process either  a single article or a list of articles
-		hence not using echo.Context Bind() function, as the The c.Bind() method in Echo
-		reads the request body only once, subsequent attempts to read it will result in an EOF error
-	*/
+	// Using Same function to process either  a single article or a list of articles
 
-	// Read the request body into bytes
+	// Read the entire request body
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
-		customOutput := CustomOutput{
-			Message: fmt.Sprintf("Failed to read request body"),
-			Error:   err.Error(),
-		}
-		responseJSON(w, customOutput, http.StatusInternalServerError)
+		handleError(w, "Failed to read request body", err, http.StatusInternalServerError)
 		return
 	}
 
-	// Try to decode the request body into a slice of Article
+	// First, try unmarshalling into a slice of articles
 	var articles []Article
-	err = json.Unmarshal(bodyBytes, &articles)
-	if err != nil {
-		// Let us check if this is a single Item
-		var article Article
-		err := json.Unmarshal(bodyBytes, &article)
-		if err != nil {
-			customOutput := CustomOutput{
-				Message: "The input provided is neither a list of articles nor a valid article. Please input either a list of articles of a single article",
-				Error:   err.Error(),
-			}
-			responseJSON(w, customOutput, http.StatusBadRequest)
+	errSlice := json.Unmarshal(bodyBytes, &articles)
+
+	// If unmarshalling into a slice fails, try unmarshalling into a single article
+	if errSlice != nil {
+		var singleArticle Article
+		errSingle := json.Unmarshal(bodyBytes, &singleArticle)
+		if errSingle != nil {
+			// If both attempts fail, the JSON is neither a valid single article nor a valid slice of articles
+			handleError(w, "Invalid JSON payload", errSingle, http.StatusBadRequest)
 			return
 		}
-		articles = []Article{article}
+		// If the single unmarshal succeeds, append it to the articles slice for consistent processing
+		articles = append(articles, singleArticle)
 	}
 
-	// Run Validation Checks on the Article
+	// Validate and Redis Set arguments needed for Redis JSONMSet
 	var articlesSetArgs []redis.JSONSetArgs
 	for _, article := range articles {
-		// Validate the Article Structure (must have at least ID and Title)
-		err = validate.Struct(article)
+		if validateErr := validate.Struct(article); validateErr != nil {
+			handleError(w, fmt.Sprintf("Validation failed for article %+v", article), validateErr, http.StatusBadRequest)
+			return
+		}
+		key := fmt.Sprintf("article:%d", article.Id)
+
+		// Check if the article already exists in Redis
+		exists, err := redisClient.Exists(ctx, key).Result()
 		if err != nil {
-			customOutput := CustomOutput{
-				Message: fmt.Sprintf("The item %+v does not seem to have all the required fields, it must have at least an ID greater than zero and a title", article),
-				Error:   err.Error(),
-			}
-			responseJSON(w, customOutput, http.StatusBadRequest)
+			handleError(w, "Error checking if article exists", err, http.StatusInternalServerError)
 			return
 		}
-		// Check if article ID don't already exist
-		articleKey := fmt.Sprintf("articleKey:%d", article.Id)
-		articlesWithThisKey, err := redisClient.JSONGet(ctx, articleKey).Result()
-		if err != nil {
-			customOutput := CustomOutput{
-				Message: "An Error Occurred while trying to Check if this article already exists.",
-				Error:   err.Error(),
-			}
-			responseJSON(w, customOutput, http.StatusInternalServerError)
+		if exists != 0 {
+			handleError(w, fmt.Sprintf("article with ID %d found in Database", article.Id), fmt.Errorf("duplicate Article Id"), http.StatusNotFound)
 			return
 		}
-		if articlesWithThisKey != "" {
-			customOutput := CustomOutput{
-				Message: fmt.Sprintf("An article with key %d already exist", article.Id),
-			}
-			responseJSON(w, customOutput, http.StatusBadRequest)
-			return
-		}
-		// For now JSONSetArgs does not seem to marshaled back JSON
+
+		// Note: For now JSONSetArgs does not seem to marshaled back JSON
 		// Hence, we marshall this before setting as Argument
-		articleByte, err := json.Marshal(article)
-		if err != nil {
-			customOutput := CustomOutput{
-				Message: fmt.Sprintf("An Error Occurred while trying to Set article with ID %d in the Database. No Article Added", article.Id),
-				Error:   err.Error(),
-			}
-			responseJSON(w, customOutput, http.StatusInternalServerError)
+		articleByte, errMarshall := json.Marshal(article)
+		if errMarshall != nil {
+			handleError(w, fmt.Sprintf("Creating article with ID %d in the Database failed. No Article Added", article.Id), errMarshall, http.StatusInternalServerError)
 			return
 		}
 		articlesSetArgs = append(articlesSetArgs, redis.JSONSetArgs{
-			Key:   articleKey,
+			Key:   key,
 			Path:  "$",
 			Value: articleByte,
 		})
@@ -276,11 +257,7 @@ func createArticle(w http.ResponseWriter, r *http.Request) {
 	// Seth the result in Database, using JSONMSet
 	result, err := redisClient.JSONMSetArgs(ctx, articlesSetArgs).Result()
 	if err != nil {
-		customOutput := CustomOutput{
-			Message: "An Error Occurred while trying to Set articles in the Database.",
-			Error:   err.Error(),
-		}
-		responseJSON(w, customOutput, http.StatusInternalServerError)
+		handleError(w, "creating articles in the Database failed", err, http.StatusInternalServerError)
 		return
 	}
 	responseJSON(w, result, http.StatusOK)
@@ -288,105 +265,85 @@ func createArticle(w http.ResponseWriter, r *http.Request) {
 
 func updateArticleByID(w http.ResponseWriter, r *http.Request) {
 
-	// Read the request body into bytes
-	bodyBytes, err := io.ReadAll(r.Body)
+	idStr := r.PathValue("id")
+	id, err := strconv.Atoi(idStr)
 	if err != nil {
-		customOutput := CustomOutput{
-			Message: fmt.Sprintf("Failed to read request body"),
-			Error:   err.Error(),
-		}
-		responseJSON(w, customOutput, http.StatusInternalServerError)
+		handleError(w, "Invalid article ID", err, http.StatusBadRequest)
 		return
 	}
 
-	id := r.PathValue("id")
-
-	// Try to decode the request body into an Article
+	// Decode the JSON payload directly from the request body
 	var article Article
-	err = json.Unmarshal(bodyBytes, &article)
-	if err != nil {
-		customOutput := CustomOutput{
-			Message: "The input provided is not a valid article. Please input either a valid article",
-			Error:   err.Error(),
-		}
-		responseJSON(w, customOutput, http.StatusBadRequest)
+	if err := json.NewDecoder(r.Body).Decode(&article); err != nil {
+		handleError(w, "Invalid JSON payload", err, http.StatusBadRequest)
 		return
 	}
 
-	// Make sure the ID is set on the updated Article
-	intId, err := strconv.Atoi(id)
-	if err != nil || intId <= 0 {
-		customOutput := CustomOutput{
-			Message: "An Error Occurred while checking if the provided id is a number that is greater than zero, please make sure to provide a valid ID",
-			Error:   err.Error(),
-		}
-		responseJSON(w, customOutput, http.StatusBadRequest)
+	// Ensure the ID in the path matches the ID in the payload if present
+	if article.Id != 0 && uint(id) != article.Id {
+		handleError(w, "Mismatch between URL ID and payload ID", fmt.Errorf("URL ID: %d, Payload ID: %d", id, article.Id), http.StatusBadRequest)
 		return
 	}
-	article.Id = uint(intId)
+	article.Id = uint(id) // Set the ID from the URL to ensure consistency
 
-	// Check if article ID exist
-	articleKey := fmt.Sprintf("articleKey:%s", id)
-	_, err = redisClient.JSONGet(ctx, articleKey).Result()
-	if err == redis.Nil {
-		customOutput := CustomOutput{
-			Message: fmt.Sprintf("No article with key %d exists", article.Id),
-		}
-		responseJSON(w, customOutput, http.StatusBadRequest)
-		return
-	}
-	if err != nil {
-		customOutput := CustomOutput{
-			Message: "An Error Occurred while trying to Check if this article already exists.",
-			Error:   err.Error(),
-		}
-		responseJSON(w, customOutput, http.StatusInternalServerError)
+	// Validate the article struct
+	if err := validate.Struct(article); err != nil {
+		handleError(w, "Validation failed for article", err, http.StatusBadRequest)
 		return
 	}
 
-	// Validate the provided article
-	validate := validator.New()
-	err = validate.Struct(article)
+	// Check if the article exists in Redis
+	key := fmt.Sprintf("article:%d", id)
+	exists, err := redisClient.Exists(ctx, key).Result()
 	if err != nil {
-		customOutput := CustomOutput{
-			Message: fmt.Sprintf("The item %+v does not seem to have all the required fields, it must have at least an ID greater than zero and a title", article),
-			Error:   err.Error(),
-		}
-		responseJSON(w, customOutput, http.StatusBadRequest)
+		handleError(w, "Error checking if article exists", err, http.StatusInternalServerError)
+		return
+	}
+	if exists == 0 {
+		handleError(w, "Article not found", fmt.Errorf("no article found with ID %d", id), http.StatusNotFound)
 		return
 	}
 
-	// Update the article
-	_, err = redisClient.JSONSet(ctx, articleKey, "$", article).Result()
-	if err != nil {
-		customOutput := CustomOutput{
-			Message: fmt.Sprintf("An Error Occured while trying to Update Article with id %d", article.Id),
-			Error:   err.Error(),
-		}
-		responseJSON(w, customOutput, http.StatusInternalServerError)
+	// Update the article in Redis
+	if _, err = redisClient.JSONSet(ctx, key, "$", article).Result(); err != nil {
+		handleError(w, "Failed to update article in Redis", err, http.StatusInternalServerError)
 		return
 	}
-	customOutput := CustomOutput{
-		Message: fmt.Sprintf("Article with id %d succesfully updated", article.Id),
-	}
-	responseJSON(w, customOutput, http.StatusOK)
+
+	// Respond with the updated article
+	responseJSON(w, article, http.StatusOK)
 }
 
 func deleteArticleByID(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	_, err := redisClient.Del(ctx, fmt.Sprintf("articleKey:%s", id)).Result()
+	idStr := r.PathValue("id")
+	id, err := strconv.Atoi(idStr)
 	if err != nil {
-		customOutput := CustomOutput{
-			Message: fmt.Sprintf("An Error Occured while trying to Delete Articles with id %s", id),
-			Error:   err.Error(),
-		}
-		responseJSON(w, customOutput, http.StatusInternalServerError)
+		handleError(w, "Invalid article ID", err, http.StatusBadRequest)
 		return
 	}
-	customOutput := CustomOutput{
-		Message: fmt.Sprintf("Article with id %s succesfully deleted", id),
+
+	// Construct the Redis key for the article
+	key := fmt.Sprintf("article:%d", id)
+
+	// Check if the article exists before attempting to delete
+	exists, err := redisClient.Exists(ctx, key).Result()
+	if err != nil {
+		handleError(w, "Error checking if article exists", err, http.StatusInternalServerError)
+		return
 	}
-	responseJSON(w, customOutput, http.StatusOK)
+	if exists == 0 {
+		handleError(w, "Article not found", fmt.Errorf("no article found with ID %d", id), http.StatusNotFound)
+		return
+	}
+
+	// Delete the article from Redis
+	if _, err := redisClient.Del(ctx, key).Result(); err != nil {
+		handleError(w, "Failed to delete article from Redis", err, http.StatusInternalServerError)
+		return
+	}
+
+	// Respond to indicate successful deletion
+	responseJSON(w, CustomOutput{Message: fmt.Sprintf("Article with ID %d successfully deleted", id)}, http.StatusOK)
 }
 
 func searchArticles(w http.ResponseWriter, r *http.Request) {
