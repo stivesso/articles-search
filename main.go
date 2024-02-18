@@ -361,18 +361,18 @@ func searchArticles(w http.ResponseWriter, r *http.Request) {
 	// Check that the provided parameters are in expected Parameters
 	providedParams := r.URL.Query()
 	if len(providedParams) == 0 {
-		customOutput := CustomOutput{
-			Message: fmt.Sprintf("You must provide at least one of the following parameter: %v", expectedParams),
-		}
-		responseJSON(w, customOutput, http.StatusBadRequest)
+		handleError(w,
+			fmt.Sprintf("You must provide at least one of the following parameter: %v", expectedParams),
+			fmt.Errorf("invalid search parameter"), http.StatusBadRequest,
+		)
 		return
 	}
 	for param, _ := range providedParams {
 		if !slices.Contains(expectedParams, param) {
-			customOutput := CustomOutput{
-				Message: fmt.Sprintf("%s query provided is not one of the following parameter: %v. Please provide a valid query", param, expectedParams),
-			}
-			responseJSON(w, customOutput, http.StatusBadRequest)
+			handleError(w,
+				fmt.Sprintf("%s query provided is not one of the following parameter: %v", param, expectedParams),
+				fmt.Errorf("invalid search parameter"), http.StatusBadRequest,
+			)
 			return
 		}
 	}
@@ -394,46 +394,37 @@ func searchArticles(w http.ResponseWriter, r *http.Request) {
 			In other words, it returns [totalItems, keys, [path, Articles], keys, [path, Articles], keys, [path, Articles]...]
 	*/
 	result, err := redisClient.Do(ctx, queries...).Result()
-	fmt.Printf("%v\n\n", result)
+	//fmt.Printf("%v\n\n", result)
 	if err != nil {
-		customOutput := CustomOutput{
-			Message: "An Error Occured while trying to Get Result for this search",
-			Error:   err.Error(),
-		}
-		responseJSON(w, customOutput, http.StatusInternalServerError)
+		handleError(w, "An Error Occurred while trying to Get Result for this search", err, http.StatusBadRequest)
 		return
 	}
 
-	// Generic Error
-	customOutputUnknownFormat := CustomOutput{
-		Message: fmt.Sprintf("Database Returned an unexpected format type when Searching with parameter %v", providedParams),
-	}
+	// Generic DB Error
+	genericDbErrorMsg := fmt.Sprintf("Database Returned an unexpected format type when Searching with parameter: %s", providedParams.Encode())
 
 	// Process Results
 	replies, ok := result.(map[interface{}]interface{})
 	if !ok || len(replies) < 1 {
-		responseJSON(w, customOutputUnknownFormat, http.StatusInternalServerError)
+		handleError(w, genericDbErrorMsg, fmt.Errorf("response is not a valid map"), http.StatusInternalServerError)
 		return
 	}
 
 	totalResults, ok := replies["total_results"].(int64)
-	fmt.Printf("%v", replies)
+	//fmt.Printf("%v", replies)
 	if !ok {
-		responseJSON(w, customOutputUnknownFormat, http.StatusInternalServerError)
+		handleError(w, genericDbErrorMsg, fmt.Errorf("total result not a valid digit"), http.StatusInternalServerError)
 		return
 	}
 
 	if totalResults <= 0 {
-		customOutput := CustomOutput{
-			Message: "Search completed, but no article found with the search criteria",
-		}
-		responseJSON(w, customOutput, http.StatusOK)
+		responseJSON(w, CustomOutput{Message: "no article found with the search criteria"}, http.StatusOK)
 		return
 	}
 
 	// Number of elements in the replies must be 3 times the totalResults
 	if len(replies) != int(totalResults*3) {
-		responseJSON(w, customOutputUnknownFormat, http.StatusInternalServerError)
+		handleError(w, genericDbErrorMsg, fmt.Errorf("number of items not matching total results"), http.StatusInternalServerError)
 		return
 	}
 
