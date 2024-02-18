@@ -410,6 +410,12 @@ func searchArticles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	data, err := json.Marshal(replies)
+	if err != nil {
+		fmt.Printf("Error: %v", err)
+	}
+	fmt.Println(data)
+
 	totalResults, ok := replies["total_results"].(int64)
 	//fmt.Printf("%v", replies)
 	if !ok {
