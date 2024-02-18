@@ -446,16 +446,18 @@ func searchArticles(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Assuming the JSON string is under the "$" key in resAttributes
-		if jsonString, ok := resAttributes["$"].(string); ok {
-			var newArticles []Article // Use a slice to handle multiple articles
-			err = json.Unmarshal([]byte(jsonString), &newArticles)
-			if err != nil {
-				handleError(w, "Failed to unmarshal articles", err, http.StatusInternalServerError)
-				return
+		for _, resultArticle := range resAttributes {
+			if jsonString, ok := resultArticle.(string); ok {
+				var newArticles []Article // Use a slice to handle multiple articles
+				err = json.Unmarshal([]byte(jsonString), &newArticles)
+				if err != nil {
+					handleError(w, "Failed to unmarshal articles", err, http.StatusInternalServerError)
+					return
+				}
+				resArticles = append(resArticles, newArticles...)
 			}
-			resArticles = append(resArticles, newArticles...)
 		}
+
 	}
 
 	responseJSON(w, resArticles, http.StatusOK)
