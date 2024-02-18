@@ -436,25 +436,25 @@ func searchArticles(w http.ResponseWriter, r *http.Request) {
 	var resArticles []Article
 	for _, eachResult := range resultsArray {
 		res, ok := eachResult.(map[interface{}]interface{})
-		if ok {
-			resAttributes, ok := res["extra_attributes"].(map[interface{}]interface{})
-			if ok {
-				for _, resultArticle := range resAttributes {
-					newArticleBytes, err := json.Marshal(resultArticle)
-					fmt.Printf("%s\n", newArticleBytes)
-					if err != nil {
-						handleError(w, genericDbErrorMsg, err, http.StatusInternalServerError)
-						return
-					}
-					var newArticle Article
-					err = json.Unmarshal(newArticleBytes, &newArticle)
-					if err != nil {
-						handleError(w, genericDbErrorMsg, err, http.StatusInternalServerError)
-						return
-					}
-					resArticles = append(resArticles, newArticle)
-				}
+		if !ok {
+			handleError(w, genericDbErrorMsg, fmt.Errorf("database Search result at first level is in invalid format"), http.StatusInternalServerError)
+			return
+		}
+		resAttributes, ok := res["extra_attributes"].(map[interface{}]interface{})
+		if !ok {
+			handleError(w, genericDbErrorMsg, fmt.Errorf("database Search result at second level is in invalid format"), http.StatusInternalServerError)
+			return
+		}
+
+		// Assuming the JSON string is under the "$" key in resAttributes
+		if jsonString, ok := resAttributes["$"].(string); ok {
+			var newArticles []Article // Use a slice to handle multiple articles
+			err = json.Unmarshal([]byte(jsonString), &newArticles)
+			if err != nil {
+				handleError(w, "Failed to unmarshal articles", err, http.StatusInternalServerError)
+				return
 			}
+			resArticles = append(resArticles, newArticles...)
 		}
 	}
 
