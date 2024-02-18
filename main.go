@@ -384,17 +384,17 @@ func searchArticles(w http.ResponseWriter, r *http.Request) {
 		args := []any{fmt.Sprintf("@%s:%s", param, fieldToSearch[0])}
 		queries = append(queries, args...)
 	}
+	queries = append(queries, "DIALECT", "3")
 
 	/*
-		Run query FT.SEARCH
-		https://redis.io/commands/ft.search/
-		FT.SEARCH returns an array reply, where the first element is an integer reply
-		of the total number of results, and then array reply pairs of document ids,
-		and array replies of attribute/value pairs
-			In other words, it returns [totalItems, keys, [path, Articles], keys, [path, Articles], keys, [path, Articles]...]
+		Run query FT.SEARCH https://redis.io/commands/ft.search/
+		Results on FT.SEARCH returns map[interface{}]interface{}
+		that looks like:
+		map[attributes:[] format:STRING results:[map[extra_attributes:map[$:{"id":1,"title"...}] id:articleKey:1 values:[]]] total_results:1 warning:[]]
 	*/
-	result, err := redisClient.Do(ctx, queries...).Result()
-	//fmt.Printf("%v\n\n", result)
+
+	redisFtResult, err := redisClient.Do(ctx, queries...).Result()
+	fmt.Printf("%v\n\n", redisFtResult)
 	if err != nil {
 		handleError(w, "An Error Occurred while trying to Get Result for this search", err, http.StatusBadRequest)
 		return
@@ -403,21 +403,15 @@ func searchArticles(w http.ResponseWriter, r *http.Request) {
 	// Generic DB Error
 	genericDbErrorMsg := fmt.Sprintf("Database Returned an unexpected format type when Searching with parameter: %s", providedParams.Encode())
 
-	// Process Results
-	replies, ok := result.(map[interface{}]interface{})
-	if !ok || len(replies) < 1 {
+	// Gather Top level map
+	topLevel, ok := redisFtResult.(map[interface{}]interface{})
+	if !ok {
 		handleError(w, genericDbErrorMsg, fmt.Errorf("response is not a valid map"), http.StatusInternalServerError)
 		return
 	}
 
-	data, err := json.Marshal(replies)
-	if err != nil {
-		fmt.Printf("Error: %v", err)
-	}
-	fmt.Println(data)
-
-	totalResults, ok := replies["total_results"].(int64)
-	//fmt.Printf("%v", replies)
+	// Check TotalResult
+	totalResults, ok := topLevel["total_results"].(int64)
 	if !ok {
 		handleError(w, genericDbErrorMsg, fmt.Errorf("total result not a valid digit"), http.StatusInternalServerError)
 		return
@@ -428,19 +422,41 @@ func searchArticles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Number of elements in the replies must be 3 times the totalResults
-	if len(replies) != int(totalResults*3) {
-		handleError(w, genericDbErrorMsg, fmt.Errorf("number of items not matching total results"), http.StatusInternalServerError)
+	// Retrieve Result Array
+	resultsArray, ok := topLevel["results"].([]interface{})
+	if !ok {
+		handleError(w, genericDbErrorMsg, fmt.Errorf("results not a valid List of Articles"), http.StatusInternalServerError)
 		return
 	}
 
-	// Let's put all keys and articles tuple in a slice
-	/*
-		allKeysAndArticles := replies[1:]
-		var arrayTupleKeysArticles [][]any
-		for i := 0; i < len(allKeysAndArticles); i += 2 {
-			arrayTupleKeysArticles = append(arrayTupleKeysArticles, allKeysAndArticles[i:i+2])
-		}*/
+	// Each item in ResultsArray should be (map[interface{}]interface{}) that has keys id and extra_attributes
+	// With the id being Redis Key and extra_attributes being another (map[interface{}]interface{})
+	// that contains key->path(e.g. $) and value->Article , so we should be able to marshall/unmarshall
+	// That object back to an Article
+	var resArticles []Article
+	for _, eachResult := range resultsArray {
+		res, ok := eachResult.(map[interface{}]interface{})
+		if ok {
+			resAttributes, ok := res["extra_attributes"].(map[interface{}]interface{})
+			if ok {
+				for _, resultArticle := range resAttributes {
+					newArticleBytes, err := json.Marshal(resultArticle)
+					fmt.Printf("%s\n", newArticleBytes)
+					if err != nil {
+						handleError(w, genericDbErrorMsg, err, http.StatusInternalServerError)
+						return
+					}
+					var newArticle Article
+					err = json.Unmarshal(newArticleBytes, &newArticle)
+					if err != nil {
+						handleError(w, genericDbErrorMsg, err, http.StatusInternalServerError)
+						return
+					}
+					resArticles = append(resArticles, newArticle)
+				}
+			}
+		}
+	}
 
-	responseJSON(w, nil, http.StatusOK)
+	responseJSON(w, resArticles, http.StatusOK)
 }
