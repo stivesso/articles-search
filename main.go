@@ -35,6 +35,7 @@ var (
 	ctx                                 = context.Background()
 	validate        *validator.Validate = validator.New()
 	searchIndexName                     = "idx_articles"
+	keysPrefix                          = "article:"
 )
 
 func main() {
@@ -112,13 +113,11 @@ Handlers Functions
 */
 
 func getAllArticles(w http.ResponseWriter, r *http.Request) {
-	// Assuming articles are stored with a known prefix in their keys, e.g., "article:"
-	prefix := "article:"
 	var keys []string
 	var articles []Article
 
-	// Use Scan to efficiently iterate through keys with the specified prefix.
-	iter := redisClient.Scan(ctx, 0, prefix+"*", 0).Iterator()
+	// Use Scan to efficiently iterate through keys with the specified keysPrefix.
+	iter := redisClient.Scan(ctx, 0, keysPrefix+"*", 0).Iterator()
 	for iter.Next(ctx) {
 		keys = append(keys, iter.Val())
 	}
@@ -167,8 +166,8 @@ func getAllArticles(w http.ResponseWriter, r *http.Request) {
 
 func getArticleByID(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	// Build the Redis key using the article ID. Assuming key format: "article:{id}"
-	key := fmt.Sprintf("article:%s", id)
+	// Build the Redis key using the article ID.
+	key := fmt.Sprintf("%s%s", keysPrefix, id)
 
 	// Retrieve the article from Redis.
 	result, err := redisClient.JSONGet(ctx, key).Result()
@@ -227,7 +226,7 @@ func createArticle(w http.ResponseWriter, r *http.Request) {
 			handleError(w, fmt.Sprintf("Validation failed for article %+v", article), validateErr, http.StatusBadRequest)
 			return
 		}
-		key := fmt.Sprintf("article:%d", article.Id)
+		key := fmt.Sprintf("%s%d", keysPrefix, article.Id)
 
 		// Check if the article already exists in Redis
 		exists, err := redisClient.Exists(ctx, key).Result()
@@ -293,7 +292,7 @@ func updateArticleByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if the article exists in Redis
-	key := fmt.Sprintf("article:%d", id)
+	key := fmt.Sprintf("%s%d", keysPrefix, id)
 	exists, err := redisClient.Exists(ctx, key).Result()
 	if err != nil {
 		handleError(w, "Error checking if article exists", err, http.StatusInternalServerError)
@@ -323,7 +322,7 @@ func deleteArticleByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Construct the Redis key for the article
-	key := fmt.Sprintf("article:%d", id)
+	key := fmt.Sprintf("%s%d", keysPrefix, id)
 
 	// Check if the article exists before attempting to delete
 	exists, err := redisClient.Exists(ctx, key).Result()
@@ -418,7 +417,7 @@ func searchArticles(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if totalResults <= 0 {
-		responseJSON(w, CustomOutput{Message: "no article found with the search criteria"}, http.StatusOK)
+		responseJSON(w, CustomOutput{Message: "no article found with the search criteria"}, http.StatusNotFound)
 		return
 	}
 
