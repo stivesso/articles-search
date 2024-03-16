@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/go-playground/validator/v10"
 	"github.com/redis/go-redis/v9"
+	"github.com/stivesso/articles-search/pkg/db"
 	"io"
 	"log"
 	"log/slog"
@@ -28,8 +29,8 @@ type Article struct {
 
 // CustomOutput for standardized error and message responses.
 type CustomOutput struct {
-	Error   string `json:"error,omitempty"`
-	Message string `json:"message,omitempty"`
+	Error  string `json:"error,omitempty"`
+	Detail string `json:"detail,omitempty"`
 }
 
 var (
@@ -56,25 +57,14 @@ func initializeRedis() error {
 	dbServer := os.Getenv("AS_DBSERVER")
 	dbPort := os.Getenv("AS_DBPORT")
 	if dbServer == "" || dbPort == "" {
-		return errors.New(fmt.Sprintf("The following environment variables need to be set: \n AS_DBSERVER for the Database Server\n AS_DBPORT for the Database Port"))
+		return errors.New("The following environment variables need to be set: \n AS_DBSERVER for the Database Server\n AS_DBPORT for the Database Port")
 	}
 	dbPortInt, err := strconv.Atoi(dbPort)
 	if err != nil {
-		return errors.New(fmt.Sprintf("unable to convert environment variable AS_DBPORT to a valid integer, the exact error was: %v", err))
+		return fmt.Errorf("unable to convert environment variable AS_DBPORT to a valid integer, the exact error was: %v", err)
 	}
-	redisClient, err = NewRedisClient(dbServer, dbPortInt, "", 0)
+	redisClient, err = db.NewRedisClient(dbServer, dbPortInt, "", 0)
 	return err
-}
-
-func NewRedisClient(dbHost string, dbPort int, dbPassword string, dbRedis int) (*redis.Client, error) {
-	client := redis.NewClient(&redis.Options{
-		Addr:     fmt.Sprintf("%s:%d", dbHost, dbPort),
-		Password: dbPassword, //For this test, not setting Authentication
-		DB:       dbRedis,    // For this Te
-	})
-	// Ping the redis server to check connection
-	_, err := client.Ping(context.Background()).Result()
-	return client, err
 }
 
 func setupHTTPServer() {
@@ -116,7 +106,7 @@ func handleError(w http.ResponseWriter, errMsg string, err error, statusCode int
 	if statusCode >= http.StatusInternalServerError {
 		slog.Error(errMsg, "Error:", err)
 	}
-	responseJSON(w, CustomOutput{Error: err.Error(), Message: errMsg}, statusCode)
+	responseJSON(w, CustomOutput{Error: err.Error(), Detail: errMsg}, statusCode)
 }
 
 /*
@@ -353,7 +343,7 @@ func deleteArticleByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Respond to indicate successful deletion
-	responseJSON(w, CustomOutput{Message: fmt.Sprintf("Article with ID %d successfully deleted", id)}, http.StatusOK)
+	responseJSON(w, CustomOutput{Detail: fmt.Sprintf("Article with ID %d successfully deleted", id)}, http.StatusOK)
 }
 
 func searchArticles(w http.ResponseWriter, r *http.Request) {
@@ -377,7 +367,7 @@ func searchArticles(w http.ResponseWriter, r *http.Request) {
 		)
 		return
 	}
-	for param, _ := range providedParams {
+	for param := range providedParams {
 		if !slices.Contains(expectedParams, param) {
 			handleError(w,
 				fmt.Sprintf("%s query provided is not one of the following parameter: %v", param, expectedParams),
@@ -404,7 +394,6 @@ func searchArticles(w http.ResponseWriter, r *http.Request) {
 	*/
 
 	redisFtResult, err := redisClient.Do(ctx, queries...).Result()
-	fmt.Printf("%v\n\n", redisFtResult)
 	if err != nil {
 		handleError(w, "An Error Occurred while trying to Get Result for this search", err, http.StatusBadRequest)
 		return
@@ -428,7 +417,7 @@ func searchArticles(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if totalResults <= 0 {
-		responseJSON(w, CustomOutput{Message: "no article found with the search criteria"}, http.StatusNotFound)
+		responseJSON(w, CustomOutput{Detail: "no article found with the search criteria"}, http.StatusNotFound)
 		return
 	}
 
