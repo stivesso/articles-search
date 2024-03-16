@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/go-playground/validator/v10"
 	"github.com/redis/go-redis/v9"
@@ -10,6 +11,7 @@ import (
 	"log"
 	"log/slog"
 	"net/http"
+	"os"
 	"reflect"
 	"slices"
 	"strconv"
@@ -51,7 +53,16 @@ func main() {
 
 func initializeRedis() error {
 	var err error
-	redisClient, err = NewRedisClient("192.168.64.7", 30183, "", 0)
+	dbServer := os.Getenv("AS_DBSERVER")
+	dbPort := os.Getenv("AS_DBPORT")
+	if dbServer == "" || dbPort == "" {
+		return errors.New(fmt.Sprintf("The following environment variables need to be set: \n AS_DBSERVER for the Database Server\n AS_DBPORT for the Database Port"))
+	}
+	dbPortInt, err := strconv.Atoi(dbPort)
+	if err != nil {
+		return errors.New(fmt.Sprintf("unable to convert environment variable AS_DBPORT to a valid integer, the exact error was: %v", err))
+	}
+	redisClient, err = NewRedisClient(dbServer, dbPortInt, "", 0)
 	return err
 }
 
@@ -128,7 +139,7 @@ func getAllArticles(w http.ResponseWriter, r *http.Request) {
 
 	if len(keys) == 0 {
 		// No articles found, return an empty list with HTTP 200 OK.
-		responseJSON(w, articles, http.StatusOK)
+		responseJSON(w, []Article{}, http.StatusOK)
 		return
 	}
 
