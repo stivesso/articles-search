@@ -1,3 +1,4 @@
+// Package db provides primitives for interacting with Redis Database
 package db
 
 import (

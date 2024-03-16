@@ -12,6 +12,7 @@ import (
 	"log"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"reflect"
 	"slices"
@@ -109,20 +110,40 @@ func handleError(w http.ResponseWriter, errMsg string, err error, statusCode int
 	responseJSON(w, CustomOutput{Error: err.Error(), Detail: errMsg}, statusCode)
 }
 
+// isQueryParamsExpected checks if a list of query parameters are expected
+func isQueryParamsExpected(queryParams url.Values, expectedParams []string) error {
+	for param := range queryParams {
+		if !slices.Contains(expectedParams, param) {
+			return fmt.Errorf("%s query provided is not one of the following parameter: %v", param, expectedParams)
+		}
+	}
+	return nil
+}
+
+// structFieldsJsonTags returns a list containing fields JSON tags of a struct
+// If the provided parameter is not a struct, then the returned Slice will be nil
+func structFieldsJsonTags(givenStruct any) []string {
+	t := reflect.TypeOf(givenStruct)
+	var listOfTags []string
+	if t.Kind() == reflect.Struct {
+		for i := 0; i < t.NumField(); i++ {
+			tag := t.Field(i).Tag.Get("json")
+			listOfTags = append(listOfTags, tag)
+		}
+	}
+	return listOfTags
+}
+
 /*
 Handlers Functions
 */
 
 func getAllArticles(w http.ResponseWriter, r *http.Request) {
-	var keys []string
 	var articles []Article
 
 	// Use Scan to efficiently iterate through keys with the specified keysPrefix.
-	iter := redisClient.Scan(ctx, 0, keysPrefix+"*", 0).Iterator()
-	for iter.Next(ctx) {
-		keys = append(keys, iter.Val())
-	}
-	if err := iter.Err(); err != nil {
+	keys, err := db.GetAllKeys(redisClient, ctx, keysPrefix)
+	if err != nil {
 		handleError(w, "Failed to retrieve article keys from Redis", err, http.StatusInternalServerError)
 		return
 	}
@@ -134,7 +155,7 @@ func getAllArticles(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Retrieve article details for each key
-	resultMget, err := redisClient.JSONMGet(ctx, "$", keys...).Result()
+	resultMget, err := db.JSONMGet(redisClient, ctx, keys)
 	if err != nil && err != redis.Nil {
 		handleError(w, "An Error Occurred while Getting Articles", err, http.StatusInternalServerError)
 		return
@@ -171,7 +192,7 @@ func getArticleByID(w http.ResponseWriter, r *http.Request) {
 	key := fmt.Sprintf("%s%s", keysPrefix, id)
 
 	// Retrieve the article from Redis.
-	result, err := redisClient.JSONGet(ctx, key).Result()
+	result, err := db.JSONGet(redisClient, ctx, key)
 	if err == redis.Nil {
 		// Article not found, respond with HTTP 404 Not Found.
 		handleError(w, fmt.Sprintf("No article found with ID %s", id), nil, http.StatusNotFound)
@@ -221,7 +242,7 @@ func createArticle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate and Redis Set arguments needed for Redis JSONMSet
-	var articlesSetArgs []redis.JSONSetArgs
+	var articlesSetArgs []db.JSONSetArgs
 	for _, article := range articles {
 		if validateErr := validate.Struct(article); validateErr != nil {
 			handleError(w, fmt.Sprintf("Validation failed for article %+v", article), validateErr, http.StatusBadRequest)
@@ -230,7 +251,7 @@ func createArticle(w http.ResponseWriter, r *http.Request) {
 		key := fmt.Sprintf("%s%d", keysPrefix, article.Id)
 
 		// Check if the article already exists in Redis
-		exists, err := redisClient.Exists(ctx, key).Result()
+		exists, err := db.Exists(redisClient, ctx, key)
 		if err != nil {
 			handleError(w, "Error checking if article exists", err, http.StatusInternalServerError)
 			return
@@ -247,15 +268,15 @@ func createArticle(w http.ResponseWriter, r *http.Request) {
 			handleError(w, fmt.Sprintf("Creating article with ID %d in the Database failed. No Article Added", article.Id), errMarshall, http.StatusInternalServerError)
 			return
 		}
-		articlesSetArgs = append(articlesSetArgs, redis.JSONSetArgs{
+		articlesSetArgs = append(articlesSetArgs, db.JSONSetArgs{
 			Key:   key,
 			Path:  "$",
 			Value: articleByte,
 		})
 	}
 
-	// Seth the result in Database, using JSONMSet
-	result, err := redisClient.JSONMSetArgs(ctx, articlesSetArgs).Result()
+	// Set the result in Database, using JSONMSet
+	result, err := db.JSONMSetArgs(redisClient, ctx, articlesSetArgs)
 	if err != nil {
 		handleError(w, "creating articles in the Database failed", err, http.StatusInternalServerError)
 		return
@@ -294,7 +315,7 @@ func updateArticleByID(w http.ResponseWriter, r *http.Request) {
 
 	// Check if the article exists in Redis
 	key := fmt.Sprintf("%s%d", keysPrefix, id)
-	exists, err := redisClient.Exists(ctx, key).Result()
+	exists, err := db.Exists(redisClient, ctx, key)
 	if err != nil {
 		handleError(w, "Error checking if article exists", err, http.StatusInternalServerError)
 		return
@@ -305,7 +326,7 @@ func updateArticleByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Update the article in Redis
-	if _, err = redisClient.JSONSet(ctx, key, "$", article).Result(); err != nil {
+	if _, err = db.JSONSet(redisClient, ctx, key, "$", article); err != nil {
 		handleError(w, "Failed to update article in Redis", err, http.StatusInternalServerError)
 		return
 	}
@@ -326,7 +347,7 @@ func deleteArticleByID(w http.ResponseWriter, r *http.Request) {
 	key := fmt.Sprintf("%s%d", keysPrefix, id)
 
 	// Check if the article exists before attempting to delete
-	exists, err := redisClient.Exists(ctx, key).Result()
+	exists, err := db.Exists(redisClient, ctx, key)
 	if err != nil {
 		handleError(w, "Error checking if article exists", err, http.StatusInternalServerError)
 		return
@@ -337,126 +358,43 @@ func deleteArticleByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Delete the article from Redis
-	if _, err := redisClient.Del(ctx, key).Result(); err != nil {
+	if _, err := db.Del(redisClient, ctx, key); err != nil {
 		handleError(w, "Failed to delete article from Redis", err, http.StatusInternalServerError)
 		return
 	}
 
 	// Respond to indicate successful deletion
-	responseJSON(w, CustomOutput{Detail: fmt.Sprintf("Article with ID %d successfully deleted", id)}, http.StatusOK)
+	responseJSON(w, CustomOutput{Detail: fmt.Sprintf("article with ID %d successfully deleted", id)}, http.StatusOK)
 }
 
 func searchArticles(w http.ResponseWriter, r *http.Request) {
 
-	// Using reflect here to Get the list of expected parameters from Article Type
-	// Using the JSON Tag
-	articleParams := Article{}
-	t := reflect.TypeOf(articleParams)
-	var expectedParams []string
-	for i := 0; i < t.NumField(); i++ {
-		tag := t.Field(i).Tag.Get("json")
-		expectedParams = append(expectedParams, tag)
-	}
+	// Getting Expected parameters from Article JSON Tags
+	expectedParams := structFieldsJsonTags(Article{})
 
 	// Check that the provided parameters are in expected Parameters
+	invalidSearchError := "invalid search parameter"
 	providedParams := r.URL.Query()
 	if len(providedParams) == 0 {
 		handleError(w,
-			fmt.Sprintf("You must provide at least one of the following parameter: %v", expectedParams),
-			fmt.Errorf("invalid search parameter"), http.StatusBadRequest,
+			invalidSearchError,
+			fmt.Errorf("you must provide at least one of the following parameter: %v", expectedParams), http.StatusBadRequest,
 		)
 		return
 	}
-	for param := range providedParams {
-		if !slices.Contains(expectedParams, param) {
-			handleError(w,
-				fmt.Sprintf("%s query provided is not one of the following parameter: %v", param, expectedParams),
-				fmt.Errorf("invalid search parameter"), http.StatusBadRequest,
-			)
-			return
-		}
+
+	if err := isQueryParamsExpected(providedParams, expectedParams); err != nil {
+		handleError(w, invalidSearchError, err, http.StatusBadRequest)
+		return
 	}
 
-	// Build the Search Query
-	var queries []any
-	queries = append(queries, "FT.SEARCH", searchIndexName)
-	for param, fieldToSearch := range providedParams {
-		args := []any{fmt.Sprintf("@%s:%s", param, fieldToSearch[0])}
-		queries = append(queries, args...)
-	}
-	queries = append(queries, "DIALECT", "3")
+	// Run the Search Query
+	genericDbErrorMsg := fmt.Sprintf("Database Error while searching with parameter: %s", providedParams.Encode())
+	resArticles, err := db.Search[Article](redisClient, ctx, searchIndexName, providedParams)
 
-	/*
-		Run query FT.SEARCH https://redis.io/commands/ft.search/
-		Results on FT.SEARCH returns map[interface{}]interface{}
-		that looks like:
-		map[attributes:[] format:STRING results:[map[extra_attributes:map[$:{"id":1,"title"...}] id:articleKey:1 values:[]]] total_results:1 warning:[]]
-	*/
-
-	redisFtResult, err := redisClient.Do(ctx, queries...).Result()
 	if err != nil {
-		handleError(w, "An Error Occurred while trying to Get Result for this search", err, http.StatusBadRequest)
+		handleError(w, genericDbErrorMsg, err, http.StatusInternalServerError)
 		return
-	}
-
-	// Generic DB Error
-	genericDbErrorMsg := fmt.Sprintf("Database Returned an unexpected format type when Searching with parameter: %s", providedParams.Encode())
-
-	// Gather Top level map
-	topLevel, ok := redisFtResult.(map[interface{}]interface{})
-	if !ok {
-		handleError(w, genericDbErrorMsg, fmt.Errorf("response is not a valid map"), http.StatusInternalServerError)
-		return
-	}
-
-	// Check TotalResult
-	totalResults, ok := topLevel["total_results"].(int64)
-	if !ok {
-		handleError(w, genericDbErrorMsg, fmt.Errorf("total result not a valid digit"), http.StatusInternalServerError)
-		return
-	}
-
-	if totalResults <= 0 {
-		responseJSON(w, CustomOutput{Detail: "no article found with the search criteria"}, http.StatusNotFound)
-		return
-	}
-
-	// Retrieve Result Array
-	resultsArray, ok := topLevel["results"].([]interface{})
-	if !ok {
-		handleError(w, genericDbErrorMsg, fmt.Errorf("results not a valid List of Articles"), http.StatusInternalServerError)
-		return
-	}
-
-	// Each item in ResultsArray should be (map[interface{}]interface{}) that has keys id and extra_attributes
-	// With the id being Redis Key and extra_attributes being another (map[interface{}]interface{})
-	// that contains key->path(e.g. $) and value->Article , so we should be able to marshall/unmarshall
-	// That object back to an Article
-	var resArticles []Article
-	for _, eachResult := range resultsArray {
-		res, ok := eachResult.(map[interface{}]interface{})
-		if !ok {
-			handleError(w, genericDbErrorMsg, fmt.Errorf("database Search result at first level is in invalid format"), http.StatusInternalServerError)
-			return
-		}
-		resAttributes, ok := res["extra_attributes"].(map[interface{}]interface{})
-		if !ok {
-			handleError(w, genericDbErrorMsg, fmt.Errorf("database Search result at second level is in invalid format"), http.StatusInternalServerError)
-			return
-		}
-
-		for _, resultArticle := range resAttributes {
-			if jsonString, ok := resultArticle.(string); ok {
-				var newArticles []Article // Use a slice to handle multiple articles
-				err = json.Unmarshal([]byte(jsonString), &newArticles)
-				if err != nil {
-					handleError(w, "Failed to unmarshal articles", err, http.StatusInternalServerError)
-					return
-				}
-				resArticles = append(resArticles, newArticles...)
-			}
-		}
-
 	}
 
 	responseJSON(w, resArticles, http.StatusOK)
