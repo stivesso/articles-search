@@ -16,7 +16,7 @@ type JSONSetArgs struct {
 }
 
 // GetAllKeys returns all keys matching a certain prefix
-func GetAllKeys(redisClient *redis.Client, ctx context.Context, keysPrefix string) ([]string, error) {
+func GetAllKeys(ctx context.Context, redisClient *redis.Client, keysPrefix string) ([]string, error) {
 	var keys []string
 
 	// Use Scan to efficiently iterate through keys with the specified keysPrefix.
@@ -31,22 +31,30 @@ func GetAllKeys(redisClient *redis.Client, ctx context.Context, keysPrefix strin
 }
 
 // JSONGet returns results from go-redis/v9 JSONGet
-func JSONGet(redisClient *redis.Client, ctx context.Context, key string) (string, error) {
-	return redisClient.JSONGet(ctx, key).Result()
+func JSONGet(ctx context.Context, redisClient *redis.Client, key string) (string, error) {
+	result, err := redisClient.JSONGet(ctx, key).Result()
+	if err == redis.Nil {
+		return "", nil
+	}
+	return result, err
 }
 
 // JSONMGet returns results from go-redis/v9 JSONMGet
-func JSONMGet(redisClient *redis.Client, ctx context.Context, keys []string) ([]any, error) {
-	return redisClient.JSONMGet(ctx, "$", keys...).Result()
+func JSONMGet(ctx context.Context, redisClient *redis.Client, keys []string) ([]any, error) {
+	result, err := redisClient.JSONMGet(ctx, "$", keys...).Result()
+	if err == redis.Nil {
+		return nil, nil
+	}
+	return result, err
 }
 
 // JSONSet returns results from go-redis/v9 JSONSet
-func JSONSet(redisClient *redis.Client, ctx context.Context, key string, path string, value any) (string, error) {
+func JSONSet(ctx context.Context, redisClient *redis.Client, key string, path string, value any) (string, error) {
 	return redisClient.JSONSet(ctx, key, path, value).Result()
 }
 
 // JSONMSetArgs returns  results from go-redis/v9 JSONMSetArgs
-func JSONMSetArgs(redisClient *redis.Client, ctx context.Context, setArgs []JSONSetArgs) (string, error) {
+func JSONMSetArgs(ctx context.Context, redisClient *redis.Client, setArgs []JSONSetArgs) (string, error) {
 	var redisSetArgs []redis.JSONSetArgs
 	for _, setArg := range setArgs {
 		redisSetArgs = append(redisSetArgs, redis.JSONSetArgs(setArg))
@@ -55,20 +63,22 @@ func JSONMSetArgs(redisClient *redis.Client, ctx context.Context, setArgs []JSON
 }
 
 // Exists return results from go-redis/v9 Exists
-func Exists(redisClient *redis.Client, ctx context.Context, key string) (int64, error) {
+func Exists(ctx context.Context, redisClient *redis.Client, key string) (int64, error) {
 	return redisClient.Exists(ctx, key).Result()
 }
 
 // Del return results from go-redis/v9 Del
-func Del(redisClient *redis.Client, ctx context.Context, key string) (int64, error) {
+func Del(ctx context.Context, redisClient *redis.Client, key string) (int64, error) {
 	return redisClient.Del(ctx, key).Result()
 }
 
 // Search perform a FT.SEARCH on the given index
-func Search[T any](redisClient *redis.Client, ctx context.Context, indexName string, filters map[string][]string) ([]T, error) {
-	// Build the Search Query
+func Search[T any](ctx context.Context, redisClient *redis.Client, indexName string, filters map[string][]string) ([]T, error) {
+
 	var queries []any
 	var result []T
+
+	// Build the Search Query
 	queries = append(queries, "FT.SEARCH", indexName)
 	for param, fieldToSearch := range filters {
 		args := []any{fmt.Sprintf("@%s:%s", param, strings.Join(fieldToSearch, " "))}

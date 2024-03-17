@@ -7,7 +7,9 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-func NewRedisClient(dbHost string, dbPort int, dbPassword string, dbRedis int) (*redis.Client, error) {
+type DbClient *redis.Client
+
+func NewDbClient(dbHost string, dbPort int, dbPassword string, dbRedis int) (DbClient, error) {
 	client := redis.NewClient(&redis.Options{
 		Addr:     fmt.Sprintf("%s:%d", dbHost, dbPort),
 		Password: dbPassword, //For this test, not setting Authentication

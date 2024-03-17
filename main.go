@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/go-playground/validator/v10"
-	"github.com/redis/go-redis/v9"
 	"github.com/stivesso/articles-search/pkg/db"
 	"io"
 	"log"
@@ -35,25 +34,25 @@ type CustomOutput struct {
 }
 
 var (
-	redisClient     *redis.Client
-	ctx                                 = context.Background()
-	validate        *validator.Validate = validator.New()
-	searchIndexName                     = "idx_articles"
-	keysPrefix                          = "article:"
+	databaseClient  db.DbClient
+	ctx             = context.Background()
+	validate        = validator.New()
+	searchIndexName = "idx_articles"
+	keysPrefix      = "article:"
 )
 
 func main() {
-	// Initialize Redis client.
-	err := initializeRedis()
+	// Initialize Database client.
+	err := initializeDatabase()
 	if err != nil {
-		log.Fatalf("Failed to connect to Redis: %v", err)
+		log.Fatalf("Failed to connect to Database: %v", err)
 	}
 
 	// Setup HTTP server and routes.
 	setupHTTPServer()
 }
 
-func initializeRedis() error {
+func initializeDatabase() error {
 	var err error
 	dbServer := os.Getenv("AS_DBSERVER")
 	dbPort := os.Getenv("AS_DBPORT")
@@ -64,7 +63,7 @@ func initializeRedis() error {
 	if err != nil {
 		return fmt.Errorf("unable to convert environment variable AS_DBPORT to a valid integer, the exact error was: %v", err)
 	}
-	redisClient, err = db.NewRedisClient(dbServer, dbPortInt, "", 0)
+	databaseClient, err = db.NewDbClient(dbServer, dbPortInt, "", 0)
 	return err
 }
 
@@ -142,9 +141,9 @@ func getAllArticles(w http.ResponseWriter, r *http.Request) {
 	var articles []Article
 
 	// Use Scan to efficiently iterate through keys with the specified keysPrefix.
-	keys, err := db.GetAllKeys(redisClient, ctx, keysPrefix)
+	keys, err := db.GetAllKeys(ctx, databaseClient, keysPrefix)
 	if err != nil {
-		handleError(w, "Failed to retrieve article keys from Redis", err, http.StatusInternalServerError)
+		handleError(w, "Failed to retrieve article keys from Database", err, http.StatusInternalServerError)
 		return
 	}
 
@@ -155,12 +154,13 @@ func getAllArticles(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Retrieve article details for each key
-	resultMget, err := db.JSONMGet(redisClient, ctx, keys)
-	if err != nil && err != redis.Nil {
+	resultMget, err := db.JSONMGet(ctx, databaseClient, keys)
+	if err != nil {
 		handleError(w, "An Error Occurred while Getting Articles", err, http.StatusInternalServerError)
 		return
 	}
-	if err == redis.Nil {
+
+	if resultMget == nil {
 		// No articles found, return an empty list with HTTP 200 OK.
 		responseJSON(w, articles, http.StatusOK)
 		return
@@ -188,18 +188,20 @@ func getAllArticles(w http.ResponseWriter, r *http.Request) {
 
 func getArticleByID(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	// Build the Redis key using the article ID.
+	// Build the Database key using the article ID.
 	key := fmt.Sprintf("%s%s", keysPrefix, id)
 
-	// Retrieve the article from Redis.
-	result, err := db.JSONGet(redisClient, ctx, key)
-	if err == redis.Nil {
+	// Retrieve the article from Database.
+	result, err := db.JSONGet(ctx, databaseClient, key)
+	if err != nil {
+		// Handle unexpected Database errors.
+		handleError(w, "Failed to retrieve article from Database", err, http.StatusInternalServerError)
+		return
+	}
+
+	if result == "" {
 		// Article not found, respond with HTTP 404 Not Found.
 		handleError(w, fmt.Sprintf("No article found with ID %s", id), nil, http.StatusNotFound)
-		return
-	} else if err != nil {
-		// Handle unexpected Redis errors.
-		handleError(w, "Failed to retrieve article from Redis", err, http.StatusInternalServerError)
 		return
 	}
 
@@ -241,7 +243,7 @@ func createArticle(w http.ResponseWriter, r *http.Request) {
 		articles = append(articles, singleArticle)
 	}
 
-	// Validate and Redis Set arguments needed for Redis JSONMSet
+	// Validate and Database Set arguments needed for Database JSONMSet
 	var articlesSetArgs []db.JSONSetArgs
 	for _, article := range articles {
 		if validateErr := validate.Struct(article); validateErr != nil {
@@ -250,8 +252,8 @@ func createArticle(w http.ResponseWriter, r *http.Request) {
 		}
 		key := fmt.Sprintf("%s%d", keysPrefix, article.Id)
 
-		// Check if the article already exists in Redis
-		exists, err := db.Exists(redisClient, ctx, key)
+		// Check if the article already exists in Database
+		exists, err := db.Exists(ctx, databaseClient, key)
 		if err != nil {
 			handleError(w, "Error checking if article exists", err, http.StatusInternalServerError)
 			return
@@ -276,7 +278,7 @@ func createArticle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Set the result in Database, using JSONMSet
-	result, err := db.JSONMSetArgs(redisClient, ctx, articlesSetArgs)
+	result, err := db.JSONMSetArgs(ctx, databaseClient, articlesSetArgs)
 	if err != nil {
 		handleError(w, "creating articles in the Database failed", err, http.StatusInternalServerError)
 		return
@@ -313,9 +315,9 @@ func updateArticleByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if the article exists in Redis
+	// Check if the article exists in Database
 	key := fmt.Sprintf("%s%d", keysPrefix, id)
-	exists, err := db.Exists(redisClient, ctx, key)
+	exists, err := db.Exists(ctx, databaseClient, key)
 	if err != nil {
 		handleError(w, "Error checking if article exists", err, http.StatusInternalServerError)
 		return
@@ -325,9 +327,9 @@ func updateArticleByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update the article in Redis
-	if _, err = db.JSONSet(redisClient, ctx, key, "$", article); err != nil {
-		handleError(w, "Failed to update article in Redis", err, http.StatusInternalServerError)
+	// Update the article in Database
+	if _, err = db.JSONSet(ctx, databaseClient, key, "$", article); err != nil {
+		handleError(w, "Failed to update article in Database", err, http.StatusInternalServerError)
 		return
 	}
 
@@ -343,11 +345,11 @@ func deleteArticleByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Construct the Redis key for the article
+	// Construct the Database key for the article
 	key := fmt.Sprintf("%s%d", keysPrefix, id)
 
 	// Check if the article exists before attempting to delete
-	exists, err := db.Exists(redisClient, ctx, key)
+	exists, err := db.Exists(ctx, databaseClient, key)
 	if err != nil {
 		handleError(w, "Error checking if article exists", err, http.StatusInternalServerError)
 		return
@@ -357,9 +359,9 @@ func deleteArticleByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Delete the article from Redis
-	if _, err := db.Del(redisClient, ctx, key); err != nil {
-		handleError(w, "Failed to delete article from Redis", err, http.StatusInternalServerError)
+	// Delete the article from Database
+	if _, err := db.Del(ctx, databaseClient, key); err != nil {
+		handleError(w, "Failed to delete article from Database", err, http.StatusInternalServerError)
 		return
 	}
 
@@ -390,7 +392,7 @@ func searchArticles(w http.ResponseWriter, r *http.Request) {
 
 	// Run the Search Query
 	genericDbErrorMsg := fmt.Sprintf("Database Error while searching with parameter: %s", providedParams.Encode())
-	resArticles, err := db.Search[Article](redisClient, ctx, searchIndexName, providedParams)
+	resArticles, err := db.Search[Article](ctx, databaseClient, searchIndexName, providedParams)
 
 	if err != nil {
 		handleError(w, genericDbErrorMsg, err, http.StatusInternalServerError)
