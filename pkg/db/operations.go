@@ -18,9 +18,22 @@ type JSONSetArgs struct {
 // SearchParams encapsulates the parameters used during a search
 type SearchParams struct {
 	Param string
-	Type  string
+	Type  JSONDataType
 	Value []string
 }
+
+// JSONDataType represents the different JSON Data Type
+// This is handy when it comes to the search function
+type JSONDataType string
+
+const (
+	NumberType  JSONDataType = "Int"
+	StringType  JSONDataType = "String"
+	BooleanType JSONDataType = "Boolean"
+	ArrayType   JSONDataType = "Array"
+	ObjectType  JSONDataType = "Hash"
+	NullType    JSONDataType = "Null"
+)
 
 // GetAllKeys returns all keys matching a certain prefix
 func GetAllKeys(ctx context.Context, redisClient *redis.Client, keysPrefix string) ([]string, error) {
@@ -90,7 +103,7 @@ func Search[T any](ctx context.Context, redisClient *redis.Client, indexName str
 	var args []string
 	for _, searchParam := range filters {
 		var fieldSearch string
-		if searchParam.Type == "Slice" {
+		if searchParam.Type == ArrayType {
 			fieldSearch = fmt.Sprintf("@%s:{%s}", searchParam.Param, strings.Join(searchParam.Value, " "))
 		} else {
 			fieldSearch = fmt.Sprintf("@%s:%s", searchParam.Param, strings.Join(searchParam.Value, " "))

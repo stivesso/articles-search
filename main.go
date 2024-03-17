@@ -164,15 +164,21 @@ func buildSearchParams(providedParams url.Values, givenStruct any) []db.SearchPa
 			// Determine the type of the field
 			switch field.Type.Kind() {
 			case reflect.Slice:
-				newSearchParam.Type = "Slice"
+				newSearchParam.Type = db.ArrayType
 			case reflect.String:
-				newSearchParam.Type = "String"
-			case reflect.Uint:
-				newSearchParam.Type = "Uint"
-			// Add more cases as needed for other types
+				newSearchParam.Type = db.StringType
+			case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+				reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+				reflect.Float32, reflect.Float64:
+				newSearchParam.Type = db.NumberType
+			case reflect.Bool:
+				newSearchParam.Type = db.BooleanType
+			case reflect.Map:
+				newSearchParam.Type = db.ObjectType
+			// Will Add more cases as needed for other types
+			// For now, only db.ArrayType really matter as that correlate with tags
 			default:
-				// Handle unsupported types if needed
-				continue
+				newSearchParam.Type = db.StringType
 			}
 
 			searchParameters = append(searchParameters, newSearchParam)
