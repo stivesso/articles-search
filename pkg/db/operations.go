@@ -148,7 +148,7 @@ func Search[T any](ctx context.Context, redisClient *redis.Client, indexName str
 
 	// Each item in ResultsArray should be (map[interface{}]interface{}) that has keys id and extra_attributes
 	// With the id being Redis Key and extra_attributes being another (map[interface{}]interface{})
-	// that contains key->path(e.g. $) and value->Article , we should be able to marshall/unmarshall
+	// that contains key->path(e.g. $) and value->Item , we should be able to marshall/unmarshall
 	// That object back to type T
 
 	for _, eachResult := range resultsArray {
@@ -161,14 +161,14 @@ func Search[T any](ctx context.Context, redisClient *redis.Client, indexName str
 			return result, fmt.Errorf("database Search result at second level is in invalid format")
 		}
 
-		for _, resultArticle := range resAttributes {
-			if jsonString, ok := resultArticle.(string); ok {
-				var newArticles []T // Use a slice to handle multiple Items
-				err = json.Unmarshal([]byte(jsonString), &newArticles)
+		for _, resultItem := range resAttributes {
+			if jsonString, ok := resultItem.(string); ok {
+				var newItems []T // Use a slice to handle multiple Items
+				err = json.Unmarshal([]byte(jsonString), &newItems)
 				if err != nil {
 					return result, fmt.Errorf("database result not on expected format, error %v", err)
 				}
-				result = append(result, newArticles...)
+				result = append(result, newItems...)
 			}
 		}
 	}
