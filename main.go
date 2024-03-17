@@ -30,8 +30,8 @@ type Article struct {
 
 // CustomOutput for standardized error and message responses.
 type CustomOutput struct {
-	Error  string `json:"error,omitempty"`
-	Detail string `json:"detail,omitempty"`
+	Error   string `json:"Error,omitempty"`
+	Message string `json:"Message,omitempty"`
 }
 
 var (
@@ -107,7 +107,7 @@ func handleError(w http.ResponseWriter, errMsg string, err error, statusCode int
 	if statusCode >= http.StatusInternalServerError {
 		slog.Error(errMsg, "Error:", err)
 	}
-	responseJSON(w, CustomOutput{Error: err.Error(), Detail: errMsg}, statusCode)
+	responseJSON(w, CustomOutput{Error: err.Error(), Message: errMsg}, statusCode)
 }
 
 // isQueryParamsExpected checks if a list of query parameters are expected
@@ -415,7 +415,7 @@ func deleteArticleByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Respond to indicate successful deletion
-	responseJSON(w, CustomOutput{Detail: fmt.Sprintf("article with ID %d successfully deleted", id)}, http.StatusOK)
+	responseJSON(w, CustomOutput{Message: fmt.Sprintf("article with ID %d successfully deleted", id)}, http.StatusOK)
 }
 
 func searchArticles(w http.ResponseWriter, r *http.Request) {

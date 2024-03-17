@@ -79,7 +79,7 @@ func Del(ctx context.Context, redisClient *redis.Client, key string) (int64, err
 	return redisClient.Del(ctx, key).Result()
 }
 
-// Search perform a FT.SEARCH on the given index
+// Search perform a FT.SEARCH on the given index using the parameter provided on a list of SearchParams
 func Search[T any](ctx context.Context, redisClient *redis.Client, indexName string, filters []SearchParams) ([]T, error) {
 
 	var queries []any
@@ -87,16 +87,17 @@ func Search[T any](ctx context.Context, redisClient *redis.Client, indexName str
 
 	// Build the Search Query
 	queries = append(queries, "FT.SEARCH", indexName)
+	var args []string
 	for _, searchParam := range filters {
-		var args []any
+		var fieldSearch string
 		if searchParam.Type == "Slice" {
-			args = []any{fmt.Sprintf("@%s:{%s}", searchParam.Param, strings.Join(searchParam.Value, " "))}
+			fieldSearch = fmt.Sprintf("@%s:{%s}", searchParam.Param, strings.Join(searchParam.Value, " "))
 		} else {
-			args = []any{fmt.Sprintf("@%s:%s", searchParam.Param, strings.Join(searchParam.Value, " "))}
+			fieldSearch = fmt.Sprintf("@%s:%s", searchParam.Param, strings.Join(searchParam.Value, " "))
 		}
-
-		queries = append(queries, args...)
+		args = append(args, fieldSearch)
 	}
+	queries = append(queries, strings.Join(args, " "))
 	queries = append(queries, "DIALECT", "3")
 
 	/*
