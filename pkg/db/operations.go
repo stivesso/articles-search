@@ -15,6 +15,13 @@ type JSONSetArgs struct {
 	Value interface{}
 }
 
+// SearchParams encapsulates the parameters used during a search
+type SearchParams struct {
+	Param string
+	Type  string
+	Value []string
+}
+
 // GetAllKeys returns all keys matching a certain prefix
 func GetAllKeys(ctx context.Context, redisClient *redis.Client, keysPrefix string) ([]string, error) {
 	var keys []string
@@ -73,15 +80,21 @@ func Del(ctx context.Context, redisClient *redis.Client, key string) (int64, err
 }
 
 // Search perform a FT.SEARCH on the given index
-func Search[T any](ctx context.Context, redisClient *redis.Client, indexName string, filters map[string][]string) ([]T, error) {
+func Search[T any](ctx context.Context, redisClient *redis.Client, indexName string, filters []SearchParams) ([]T, error) {
 
 	var queries []any
 	var result []T
 
 	// Build the Search Query
 	queries = append(queries, "FT.SEARCH", indexName)
-	for param, fieldToSearch := range filters {
-		args := []any{fmt.Sprintf("@%s:%s", param, strings.Join(fieldToSearch, " "))}
+	for _, searchParam := range filters {
+		var args []any
+		if searchParam.Type == "Slice" {
+			args = []any{fmt.Sprintf("@%s:{%s}", searchParam.Param, strings.Join(searchParam.Value, " "))}
+		} else {
+			args = []any{fmt.Sprintf("@%s:%s", searchParam.Param, strings.Join(searchParam.Value, " "))}
+		}
+
 		queries = append(queries, args...)
 	}
 	queries = append(queries, "DIALECT", "3")

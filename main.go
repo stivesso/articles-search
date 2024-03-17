@@ -16,6 +16,7 @@ import (
 	"reflect"
 	"slices"
 	"strconv"
+	"strings"
 )
 
 // Article represents the structure of an Article.
@@ -131,6 +132,54 @@ func structFieldsJsonTags(givenStruct any) []string {
 		}
 	}
 	return listOfTags
+}
+
+// buildSearchParams builds a list of db.SearchParams
+// by matching json tags on the given Struct with the parameters provided
+func buildSearchParams(providedParams url.Values, givenStruct any) []db.SearchParams {
+	var searchParameters []db.SearchParams
+	givenStructType := reflect.TypeOf(givenStruct)
+
+	if givenStructType.Kind() == reflect.Struct {
+		for param, fieldToSearch := range providedParams {
+			// Check if the param is one of the JSON tags in the given struct
+			var field reflect.StructField
+			var found bool
+			for i := 0; i < givenStructType.NumField(); i++ {
+				if givenStructType.Field(i).Tag.Get("json") == param {
+					field = givenStructType.Field(i)
+					found = true
+					break
+				}
+			}
+
+			if !found {
+				continue // Skip if the parameter doesn't correspond to a field in the Given struct
+			}
+
+			var newSearchParam db.SearchParams
+			newSearchParam.Param = strings.ToLower(param)
+			newSearchParam.Value = fieldToSearch
+
+			// Determine the type of the field
+			switch field.Type.Kind() {
+			case reflect.Slice:
+				newSearchParam.Type = "Slice"
+			case reflect.String:
+				newSearchParam.Type = "String"
+			case reflect.Uint:
+				newSearchParam.Type = "Uint"
+			// Add more cases as needed for other types
+			default:
+				// Handle unsupported types if needed
+				continue
+			}
+
+			searchParameters = append(searchParameters, newSearchParam)
+		}
+	}
+
+	return searchParameters
 }
 
 /*
@@ -374,9 +423,9 @@ func searchArticles(w http.ResponseWriter, r *http.Request) {
 	// Getting Expected parameters from Article JSON Tags
 	expectedParams := structFieldsJsonTags(Article{})
 
-	// Check that the provided parameters are in expected Parameters
-	invalidSearchError := "invalid search parameter"
 	providedParams := r.URL.Query()
+	invalidSearchError := "invalid search parameter"
+
 	if len(providedParams) == 0 {
 		handleError(w,
 			invalidSearchError,
@@ -385,16 +434,19 @@ func searchArticles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check that the provided parameters are in expected Parameters
 	if err := isQueryParamsExpected(providedParams, expectedParams); err != nil {
 		handleError(w, invalidSearchError, err, http.StatusBadRequest)
 		return
 	}
 
-	// Run the Search Query
-	genericDbErrorMsg := fmt.Sprintf("Database Error while searching with parameter: %s", providedParams.Encode())
-	resArticles, err := db.Search[Article](ctx, databaseClient, searchIndexName, providedParams)
+	// Database Search Parameter
+	searchParameters := buildSearchParams(providedParams, Article{})
 
+	// Run the Search Query
+	resArticles, err := db.Search[Article](ctx, databaseClient, searchIndexName, searchParameters)
 	if err != nil {
+		genericDbErrorMsg := fmt.Sprintf("Database Error while searching with parameter: %s", providedParams.Encode())
 		handleError(w, genericDbErrorMsg, err, http.StatusInternalServerError)
 		return
 	}
