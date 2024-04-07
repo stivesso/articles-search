@@ -188,6 +188,30 @@ func buildSearchParams(providedParams url.Values, givenStruct any) []db.SearchPa
 	return searchParameters
 }
 
+// getAutomatedId retrieves the next available ID for a new record.
+// If there are existing keys, it returns the maximum ID + 1 as the next ID.
+// If there are no existing keys, it returns 1 as the next ID.
+func getAutomatedId() (uint, error) {
+	existingKeys, err := db.GetAllKeys(ctx, databaseClient, keysPrefix)
+	if err != nil {
+		return 0, err
+	}
+	allIds := make([]uint, len(existingKeys))
+	for i, key := range existingKeys {
+		id, err := strconv.Atoi(strings.TrimPrefix(key, keysPrefix))
+		if err != nil {
+			return 0, err
+		}
+		allIds[i] = uint(id)
+	}
+	if len(allIds) > 0 {
+		maxID := slices.Max(allIds)
+		nextID := maxID + 1
+		return nextID, nil
+	}
+	return 1, nil
+}
+
 /*
 Handlers Functions
 */
