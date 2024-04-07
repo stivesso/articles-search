@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"github.com/go-playground/validator/v10"
 	"github.com/stivesso/articles-search/pkg/db"
-	"io"
 	"log"
 	"log/slog"
 	"net/http"
@@ -295,36 +294,63 @@ func getArticleByID(w http.ResponseWriter, r *http.Request) {
 	responseJSON(w, article, http.StatusOK)
 }
 
+// createArticle processes a HTTP POST request to create a new article or a list of articles.
+// The function reads the entire request body and tries to unmarshal it into a slice of articles.
+// If unmarshalling fails, it tries again to unmarshal it into a single article.
+// If both attempts fail, an error response is sent indicating that the JSON payload is invalid.
+// The function then validates each article and generates a new ID if not provided.
+// If the article ID already exists in the database, an error response is sent.
+// The function sets the result in the database using JSONMSet and sends a successful response.
+// If any error occurs during the process, the handleError function is called to handle the error and send an error response.
 func createArticle(w http.ResponseWriter, r *http.Request) {
-	// Using Same function to process either  a single article or a list of articles
+	var articlesSetArgs []db.JSONSetArgs
+	var articles []Article
 
-	// Read the entire request body
-	bodyBytes, err := io.ReadAll(r.Body)
+	decoder := json.NewDecoder(r.Body)
+
+	// read the  first token that will help check if it's an array or a single object
+	typeChecker, err := decoder.Token()
 	if err != nil {
-		handleError(w, "Failed to read request body", err, http.StatusInternalServerError)
+		handleError(w, "Error reading JSON", err, http.StatusBadRequest)
 		return
 	}
 
-	// First, try unmarshalling into a slice of articles
-	var articles []Article
-	errSlice := json.Unmarshal(bodyBytes, &articles)
-
-	// If unmarshalling into a slice fails, try unmarshalling into a single article
-	if errSlice != nil {
-		var singleArticle Article
-		errSingle := json.Unmarshal(bodyBytes, &singleArticle)
-		if errSingle != nil {
-			// If both attempts fail, the JSON is neither a valid single article nor a valid slice of articles
-			handleError(w, "Invalid JSON payload", errSingle, http.StatusBadRequest)
+	switch typeChecker {
+	case json.Delim('['): // It's an array
+		for decoder.More() {
+			var article Article
+			// decode an array value
+			err := decoder.Decode(&article)
+			if err != nil {
+				handleError(w, "Failed to decode request body", err, http.StatusBadRequest)
+				return
+			}
+			articles = append(articles, article)
+		}
+	case json.Delim('{'): // It's a single object
+		decoder = json.NewDecoder(r.Body) //reinitialize decoder since we consumed the first token
+		var article Article
+		// decode an array value
+		err := decoder.Decode(&article)
+		if err != nil {
+			handleError(w, "Failed to decode request body", err, http.StatusBadRequest)
 			return
 		}
-		// If the single unmarshal succeeds, append it to the articles slice for consistent processing
-		articles = append(articles, singleArticle)
+		articles = append(articles, article)
+	default:
+		handleError(w, "Invalid JSON format", errors.New("the Provided JSON is neither a list of articles nor an article"), http.StatusBadRequest)
 	}
 
 	// Validate and Database Set arguments needed for Database JSONMSet
-	var articlesSetArgs []db.JSONSetArgs
 	for _, article := range articles {
+		if article.Id == 0 {
+			newId, err := getAutomatedId()
+			if err != nil {
+				handleError(w, "Failed to generate automated ID", err, http.StatusInternalServerError)
+				return
+			}
+			article.Id = newId
+		}
 		if validateErr := validate.Struct(article); validateErr != nil {
 			handleError(w, fmt.Sprintf("Validation failed for article %+v", article), validateErr, http.StatusBadRequest)
 			return
