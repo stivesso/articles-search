@@ -328,6 +328,7 @@ func createArticle(w http.ResponseWriter, r *http.Request) {
 			articles = append(articles, article)
 		}
 	case json.Delim('{'): // It's a single object
+		// TODO: This is not working, because rereading r.Body returns an EOF, r.Body can only be read once
 		decoder = json.NewDecoder(r.Body) //reinitialize decoder since we consumed the first token
 		var article Article
 		// decode an array value
