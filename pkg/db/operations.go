@@ -15,6 +15,26 @@ type JSONSetArgs struct {
 	Value interface{}
 }
 
+// SearchParams encapsulates the parameters used during a search
+type SearchParams struct {
+	Param string
+	Type  JSONDataType
+	Value []string
+}
+
+// JSONDataType represents the different JSON Data Type
+// This is handy when it comes to the search function
+type JSONDataType string
+
+const (
+	NumberType  JSONDataType = "Int"
+	StringType  JSONDataType = "String"
+	BooleanType JSONDataType = "Boolean"
+	ArrayType   JSONDataType = "Array"
+	ObjectType  JSONDataType = "Hash"
+	NullType    JSONDataType = "Null"
+)
+
 // GetAllKeys returns all keys matching a certain prefix
 func GetAllKeys(ctx context.Context, redisClient *redis.Client, keysPrefix string) ([]string, error) {
 	var keys []string
@@ -72,18 +92,25 @@ func Del(ctx context.Context, redisClient *redis.Client, key string) (int64, err
 	return redisClient.Del(ctx, key).Result()
 }
 
-// Search perform a FT.SEARCH on the given index
-func Search[T any](ctx context.Context, redisClient *redis.Client, indexName string, filters map[string][]string) ([]T, error) {
+// Search perform a FT.SEARCH on the given index using the parameter provided on a list of SearchParams
+func Search[T any](ctx context.Context, redisClient *redis.Client, indexName string, filters []SearchParams) ([]T, error) {
 
 	var queries []any
 	var result []T
 
 	// Build the Search Query
 	queries = append(queries, "FT.SEARCH", indexName)
-	for param, fieldToSearch := range filters {
-		args := []any{fmt.Sprintf("@%s:%s", param, strings.Join(fieldToSearch, " "))}
-		queries = append(queries, args...)
+	var args []string
+	for _, searchParam := range filters {
+		var fieldSearch string
+		if searchParam.Type == ArrayType {
+			fieldSearch = fmt.Sprintf("@%s:{%s}", searchParam.Param, strings.Join(searchParam.Value, " "))
+		} else {
+			fieldSearch = fmt.Sprintf("@%s:%s", searchParam.Param, strings.Join(searchParam.Value, " "))
+		}
+		args = append(args, fieldSearch)
 	}
+	queries = append(queries, strings.Join(args, " "))
 	queries = append(queries, "DIALECT", "3")
 
 	/*
@@ -121,7 +148,7 @@ func Search[T any](ctx context.Context, redisClient *redis.Client, indexName str
 
 	// Each item in ResultsArray should be (map[interface{}]interface{}) that has keys id and extra_attributes
 	// With the id being Redis Key and extra_attributes being another (map[interface{}]interface{})
-	// that contains key->path(e.g. $) and value->Article , we should be able to marshall/unmarshall
+	// that contains key->path(e.g. $) and value->Item , we should be able to marshall/unmarshall
 	// That object back to type T
 
 	for _, eachResult := range resultsArray {
@@ -134,14 +161,14 @@ func Search[T any](ctx context.Context, redisClient *redis.Client, indexName str
 			return result, fmt.Errorf("database Search result at second level is in invalid format")
 		}
 
-		for _, resultArticle := range resAttributes {
-			if jsonString, ok := resultArticle.(string); ok {
-				var newArticles []T // Use a slice to handle multiple Items
-				err = json.Unmarshal([]byte(jsonString), &newArticles)
+		for _, resultItem := range resAttributes {
+			if jsonString, ok := resultItem.(string); ok {
+				var newItems []T // Use a slice to handle multiple Items
+				err = json.Unmarshal([]byte(jsonString), &newItems)
 				if err != nil {
 					return result, fmt.Errorf("database result not on expected format, error %v", err)
 				}
-				result = append(result, newArticles...)
+				result = append(result, newItems...)
 			}
 		}
 	}

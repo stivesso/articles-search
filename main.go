@@ -16,6 +16,7 @@ import (
 	"reflect"
 	"slices"
 	"strconv"
+	"strings"
 )
 
 // Article represents the structure of an Article.
@@ -29,8 +30,8 @@ type Article struct {
 
 // CustomOutput for standardized error and message responses.
 type CustomOutput struct {
-	Error  string `json:"error,omitempty"`
-	Detail string `json:"detail,omitempty"`
+	Error   string `json:"Error,omitempty"`
+	Message string `json:"Message,omitempty"`
 }
 
 var (
@@ -106,7 +107,7 @@ func handleError(w http.ResponseWriter, errMsg string, err error, statusCode int
 	if statusCode >= http.StatusInternalServerError {
 		slog.Error(errMsg, "Error:", err)
 	}
-	responseJSON(w, CustomOutput{Error: err.Error(), Detail: errMsg}, statusCode)
+	responseJSON(w, CustomOutput{Error: err.Error(), Message: errMsg}, statusCode)
 }
 
 // isQueryParamsExpected checks if a list of query parameters are expected
@@ -131,6 +132,60 @@ func structFieldsJsonTags(givenStruct any) []string {
 		}
 	}
 	return listOfTags
+}
+
+// buildSearchParams builds a list of db.SearchParams
+// by matching json tags on the given Struct with the parameters provided
+func buildSearchParams(providedParams url.Values, givenStruct any) []db.SearchParams {
+	var searchParameters []db.SearchParams
+	givenStructType := reflect.TypeOf(givenStruct)
+
+	if givenStructType.Kind() == reflect.Struct {
+		for param, fieldToSearch := range providedParams {
+			// Check if the param is one of the JSON tags in the given struct
+			var field reflect.StructField
+			var found bool
+			for i := 0; i < givenStructType.NumField(); i++ {
+				if givenStructType.Field(i).Tag.Get("json") == param {
+					field = givenStructType.Field(i)
+					found = true
+					break
+				}
+			}
+
+			if !found {
+				continue // Skip if the parameter doesn't correspond to a field in the Given struct
+			}
+
+			var newSearchParam db.SearchParams
+			newSearchParam.Param = strings.ToLower(param)
+			newSearchParam.Value = fieldToSearch
+
+			// Determine the type of the field
+			switch field.Type.Kind() {
+			case reflect.Slice:
+				newSearchParam.Type = db.ArrayType
+			case reflect.String:
+				newSearchParam.Type = db.StringType
+			case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+				reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+				reflect.Float32, reflect.Float64:
+				newSearchParam.Type = db.NumberType
+			case reflect.Bool:
+				newSearchParam.Type = db.BooleanType
+			case reflect.Map:
+				newSearchParam.Type = db.ObjectType
+			// Will Add more cases as needed for other types
+			// For now, only db.ArrayType really matter as that correlate with tags
+			default:
+				newSearchParam.Type = db.StringType
+			}
+
+			searchParameters = append(searchParameters, newSearchParam)
+		}
+	}
+
+	return searchParameters
 }
 
 /*
@@ -366,7 +421,7 @@ func deleteArticleByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Respond to indicate successful deletion
-	responseJSON(w, CustomOutput{Detail: fmt.Sprintf("article with ID %d successfully deleted", id)}, http.StatusOK)
+	responseJSON(w, CustomOutput{Message: fmt.Sprintf("article with ID %d successfully deleted", id)}, http.StatusOK)
 }
 
 func searchArticles(w http.ResponseWriter, r *http.Request) {
@@ -374,9 +429,9 @@ func searchArticles(w http.ResponseWriter, r *http.Request) {
 	// Getting Expected parameters from Article JSON Tags
 	expectedParams := structFieldsJsonTags(Article{})
 
-	// Check that the provided parameters are in expected Parameters
-	invalidSearchError := "invalid search parameter"
 	providedParams := r.URL.Query()
+	invalidSearchError := "invalid search parameter"
+
 	if len(providedParams) == 0 {
 		handleError(w,
 			invalidSearchError,
@@ -385,16 +440,19 @@ func searchArticles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check that the provided parameters are in expected Parameters
 	if err := isQueryParamsExpected(providedParams, expectedParams); err != nil {
 		handleError(w, invalidSearchError, err, http.StatusBadRequest)
 		return
 	}
 
-	// Run the Search Query
-	genericDbErrorMsg := fmt.Sprintf("Database Error while searching with parameter: %s", providedParams.Encode())
-	resArticles, err := db.Search[Article](ctx, databaseClient, searchIndexName, providedParams)
+	// Database Search Parameter
+	searchParameters := buildSearchParams(providedParams, Article{})
 
+	// Run the Search Query
+	resArticles, err := db.Search[Article](ctx, databaseClient, searchIndexName, searchParameters)
 	if err != nil {
+		genericDbErrorMsg := fmt.Sprintf("Database Error while searching with parameter: %s", providedParams.Encode())
 		handleError(w, genericDbErrorMsg, err, http.StatusInternalServerError)
 		return
 	}
