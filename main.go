@@ -306,10 +306,10 @@ func createArticle(w http.ResponseWriter, r *http.Request) {
 	var articlesSetArgs []db.JSONSetArgs
 	var articles []Article
 
-	decoder := json.NewDecoder(r.Body)
+	jsonDecoder := json.NewDecoder(r.Body)
 
 	// read the  first token that will help check if it's an array or a single object
-	typeChecker, err := decoder.Token()
+	typeChecker, err := jsonDecoder.Token()
 	if err != nil {
 		handleError(w, "Error reading JSON", err, http.StatusBadRequest)
 		return
@@ -317,10 +317,10 @@ func createArticle(w http.ResponseWriter, r *http.Request) {
 
 	switch typeChecker {
 	case json.Delim('['): // It's an array
-		for decoder.More() {
+		for jsonDecoder.More() {
 			var article Article
 			// decode an array value
-			err := decoder.Decode(&article)
+			err := jsonDecoder.Decode(&article)
 			if err != nil {
 				handleError(w, "Failed to decode request body", err, http.StatusBadRequest)
 				return
@@ -329,10 +329,9 @@ func createArticle(w http.ResponseWriter, r *http.Request) {
 		}
 	case json.Delim('{'): // It's a single object
 		// TODO: This is not working, because rereading r.Body returns an EOF, r.Body can only be read once
-		decoder = json.NewDecoder(r.Body) //reinitialize decoder since we consumed the first token
 		var article Article
 		// decode an array value
-		err := decoder.Decode(&article)
+		err := jsonDecoder.Decode(&article)
 		if err != nil {
 			handleError(w, "Failed to decode request body", err, http.StatusBadRequest)
 			return
