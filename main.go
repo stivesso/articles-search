@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"github.com/go-playground/validator/v10"
 	"github.com/google/uuid"
 	"github.com/stivesso/articles-search/pkg/db"
+	"io"
 	"log"
 	"log/slog"
 	"net/http"
@@ -312,7 +314,8 @@ func createArticle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch typeChecker {
-	case json.Delim('['): // It's an array
+	case json.Delim('['): // The token is an opening bracket, indicating an array
+		// Decode each element and store in articles
 		for jsonDecoder.More() {
 			var article Article
 			// decode an array value
@@ -323,13 +326,20 @@ func createArticle(w http.ResponseWriter, r *http.Request) {
 			}
 			articles = append(articles, article)
 		}
-	case json.Delim('{'): // It's a single object
-		// TODO: This is not working, because rereading r.Body returns an EOF, r.Body can only be read once
+	case json.Delim('{'): // The token is an opening brace, indicating a single object
+		// Create a buffer and write the opening brace to it, since it was already consumed
+		var buf bytes.Buffer
+		buf.WriteByte('{')
+		// Read the remainder of the JSON object from the decoder's buffer
+		_, err := buf.ReadFrom(jsonDecoder.Buffered())
+		if err != nil && err != io.EOF {
+			handleError(w, "Failed to read request body", err, http.StatusBadRequest)
+			return
+		}
+		// Unmarshal the JSON bytes from the buffer into an article
 		var article Article
-		// decode an array value
-		err := jsonDecoder.Decode(&article)
-		if err != nil {
-			handleError(w, "Failed to decode request body", err, http.StatusBadRequest)
+		if err := json.Unmarshal(buf.Bytes(), &article); err != nil {
+			handleError(w, "Failed to unmarshal JSON", err, http.StatusBadRequest)
 			return
 		}
 		articles = append(articles, article)
