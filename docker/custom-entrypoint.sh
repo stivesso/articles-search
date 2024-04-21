@@ -22,7 +22,7 @@ until redis-cli ping &>/dev/null; do
 done
 
 # Add logic for creating Redisearch indexes
-redis-cli FT.CREATE idx_articles ON HASH PREFIX 1 "articleKey:" SCHEMA title TEXT content TEXT author TEXT tags TAG
+redis-cli FT.CREATE idx_articles ON JSON PREFIX 1 "article" SCHEMA $.id AS id TEXT $.title AS title TEXT $.content AS content TEXT $.author AS author TEXT $.tags AS tags TAG
 
 # Wait for the background process to finish ,and returns its exit code
 wait
