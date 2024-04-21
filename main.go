@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/go-playground/validator/v10"
+	"github.com/google/uuid"
 	"github.com/stivesso/articles-search/pkg/db"
 	"log"
 	"log/slog"
@@ -20,11 +21,11 @@ import (
 
 // Article represents the structure of an Article.
 type Article struct {
-	Id      uint     `json:"id" validate:"required"`
-	Title   string   `json:"title" validate:"required"`
-	Content string   `json:"content" validate:"omitempty"`
-	Author  string   `json:"author" validate:"omitempty"`
-	Tags    []string `json:"tags" validate:"omitempty"`
+	Id      string   `json:"id" validate:"required,validUuid"` // Id represents the unique identifier of an Article, it is a JSON field that is required and must be a valid UUID.
+	Title   string   `json:"title" validate:"required"`        // Title represents the title of an article which is a required field that must be populated.
+	Content string   `json:"content" validate:"omitempty"`     // Content represents the content of an Article, it is a JSON field that can be empty.
+	Author  string   `json:"author" validate:"omitempty"`      // Author represents the author of an Article.
+	Tags    []string `json:"tags" validate:"omitempty"`        // Tags represents the tags associated with an Article. It is a JSON field that can be empty.
 }
 
 // CustomOutput for standardized error and message responses.
@@ -42,8 +43,15 @@ var (
 )
 
 func main() {
+
+	// Register validate for tag validUuid
+	err := validate.RegisterValidation("validUuid", uuidValidation)
+	if err != nil {
+		log.Fatalf("Unable to register the function required to validate article data, error was: %v", err)
+	}
+
 	// Initialize Database client.
-	err := initializeDatabase()
+	err = initializeDatabase()
 	if err != nil {
 		log.Fatalf("Failed to connect to Database: %v", err)
 	}
@@ -51,6 +59,10 @@ func main() {
 	// Setup HTTP server and routes.
 	setupHTTPServer()
 }
+
+/*
+  Helper functions
+*/
 
 func initializeDatabase() error {
 	var err error
@@ -68,12 +80,13 @@ func initializeDatabase() error {
 }
 
 func setupHTTPServer() {
+
 	mux := http.NewServeMux()
 
 	// Define routes using pattern matching for IDs.
 	mux.HandleFunc("GET /articles", getAllArticles)
 	mux.HandleFunc("GET /article/{id}", getArticleByID)
-	mux.HandleFunc("POST /article", createArticle)
+	mux.HandleFunc("POST /articles", createArticle)
 	mux.HandleFunc("PUT /article/{id}", updateArticleByID)
 	mux.HandleFunc("DELETE /article/{id}", deleteArticleByID)
 	mux.HandleFunc("GET /articles/search", searchArticles)
@@ -117,6 +130,13 @@ func isQueryParamsExpected(queryParams url.Values, expectedParams []string) erro
 		}
 	}
 	return nil
+}
+
+// uuidValidation validates if a given field is a valid UUID format using the UUID.Parse() function.
+// It returns a boolean value indicating whether the validation succeeds or fails.
+func uuidValidation(fl validator.FieldLevel) bool {
+	_, err := uuid.Parse(fl.Field().String())
+	return err == nil
 }
 
 // structFieldsJsonTags returns a list containing fields JSON tags of a struct
@@ -185,30 +205,6 @@ func buildSearchParams(providedParams url.Values, givenStruct any) []db.SearchPa
 	}
 
 	return searchParameters
-}
-
-// getAutomatedId retrieves the next available ID for a new record.
-// If there are existing keys, it returns the maximum ID + 1 as the next ID.
-// If there are no existing keys, it returns 1 as the next ID.
-func getAutomatedId() (uint, error) {
-	existingKeys, err := db.GetAllKeys(ctx, databaseClient, keysPrefix)
-	if err != nil {
-		return 0, err
-	}
-	allIds := make([]uint, len(existingKeys))
-	for i, key := range existingKeys {
-		id, err := strconv.Atoi(strings.TrimPrefix(key, keysPrefix))
-		if err != nil {
-			return 0, err
-		}
-		allIds[i] = uint(id)
-	}
-	if len(allIds) > 0 {
-		maxID := slices.Max(allIds)
-		nextID := maxID + 1
-		return nextID, nil
-	}
-	return 1, nil
 }
 
 /*
@@ -294,7 +290,7 @@ func getArticleByID(w http.ResponseWriter, r *http.Request) {
 	responseJSON(w, article, http.StatusOK)
 }
 
-// createArticle processes a HTTP POST request to create a new article or a list of articles.
+// createArticle processes an HTTP POST request to create a new article or a list of articles.
 // The function reads the entire request body and tries to unmarshal it into a slice of articles.
 // If unmarshalling fails, it tries again to unmarshal it into a single article.
 // If both attempts fail, an error response is sent indicating that the JSON payload is invalid.
@@ -343,19 +339,16 @@ func createArticle(w http.ResponseWriter, r *http.Request) {
 
 	// Validate and Database Set arguments needed for Database JSONMSet
 	for _, article := range articles {
-		if article.Id == 0 {
-			newId, err := getAutomatedId()
-			if err != nil {
-				handleError(w, "Failed to generate automated ID", err, http.StatusInternalServerError)
-				return
-			}
-			article.Id = newId
+		if article.Id == "" {
+			// Generate a unique UUID
+			newId := uuid.New()
+			article.Id = newId.String()
 		}
 		if validateErr := validate.Struct(article); validateErr != nil {
 			handleError(w, fmt.Sprintf("Validation failed for article %+v", article), validateErr, http.StatusBadRequest)
 			return
 		}
-		key := fmt.Sprintf("%s%d", keysPrefix, article.Id)
+		key := fmt.Sprintf("%s%s", keysPrefix, article.Id)
 
 		// Check if the article already exists in Database
 		exists, err := db.Exists(ctx, databaseClient, key)
@@ -364,7 +357,7 @@ func createArticle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if exists != 0 {
-			handleError(w, fmt.Sprintf("article with ID %d found in Database", article.Id), fmt.Errorf("duplicate Article Id"), http.StatusNotFound)
+			handleError(w, fmt.Sprintf("article with ID %s found in Database", article.Id), fmt.Errorf("duplicate Article Id"), http.StatusNotFound)
 			return
 		}
 
@@ -372,7 +365,7 @@ func createArticle(w http.ResponseWriter, r *http.Request) {
 		// Hence, we marshall this before setting as Argument
 		articleByte, errMarshall := json.Marshal(article)
 		if errMarshall != nil {
-			handleError(w, fmt.Sprintf("Creating article with ID %d in the Database failed. No Article Added", article.Id), errMarshall, http.StatusInternalServerError)
+			handleError(w, fmt.Sprintf("Creating article with ID %s in the Database failed. No Article Added", article.Id), errMarshall, http.StatusInternalServerError)
 			return
 		}
 		articlesSetArgs = append(articlesSetArgs, db.JSONSetArgs{
@@ -393,12 +386,7 @@ func createArticle(w http.ResponseWriter, r *http.Request) {
 
 func updateArticleByID(w http.ResponseWriter, r *http.Request) {
 
-	idStr := r.PathValue("id")
-	id, err := strconv.Atoi(idStr)
-	if err != nil {
-		handleError(w, "Invalid article ID", err, http.StatusBadRequest)
-		return
-	}
+	id := r.PathValue("id")
 
 	// Decode the JSON payload directly from the request body
 	var article Article
@@ -406,13 +394,7 @@ func updateArticleByID(w http.ResponseWriter, r *http.Request) {
 		handleError(w, "Invalid JSON payload", err, http.StatusBadRequest)
 		return
 	}
-
-	// Ensure the ID in the path matches the ID in the payload if present
-	if article.Id != 0 && uint(id) != article.Id {
-		handleError(w, "Mismatch between URL ID and payload ID", fmt.Errorf("URL ID: %d, Payload ID: %d", id, article.Id), http.StatusBadRequest)
-		return
-	}
-	article.Id = uint(id) // Set the ID from the URL to ensure consistency
+	article.Id = id
 
 	// Validate the article struct
 	if err := validate.Struct(article); err != nil {
@@ -421,14 +403,14 @@ func updateArticleByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if the article exists in Database
-	key := fmt.Sprintf("%s%d", keysPrefix, id)
+	key := fmt.Sprintf("%s%s", keysPrefix, id)
 	exists, err := db.Exists(ctx, databaseClient, key)
 	if err != nil {
 		handleError(w, "Error checking if article exists", err, http.StatusInternalServerError)
 		return
 	}
 	if exists == 0 {
-		handleError(w, "Article not found", fmt.Errorf("no article found with ID %d", id), http.StatusNotFound)
+		handleError(w, "Article not found", fmt.Errorf("no article found with ID %s", id), http.StatusNotFound)
 		return
 	}
 
@@ -443,15 +425,10 @@ func updateArticleByID(w http.ResponseWriter, r *http.Request) {
 }
 
 func deleteArticleByID(w http.ResponseWriter, r *http.Request) {
-	idStr := r.PathValue("id")
-	id, err := strconv.Atoi(idStr)
-	if err != nil {
-		handleError(w, "Invalid article ID", err, http.StatusBadRequest)
-		return
-	}
+	id := r.PathValue("id")
 
 	// Construct the Database key for the article
-	key := fmt.Sprintf("%s%d", keysPrefix, id)
+	key := fmt.Sprintf("%s%s", keysPrefix, id)
 
 	// Check if the article exists before attempting to delete
 	exists, err := db.Exists(ctx, databaseClient, key)
@@ -460,7 +437,7 @@ func deleteArticleByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if exists == 0 {
-		handleError(w, "Article not found", fmt.Errorf("no article found with ID %d", id), http.StatusNotFound)
+		handleError(w, "Article not found", fmt.Errorf("no article found with ID %s", id), http.StatusNotFound)
 		return
 	}
 
@@ -471,7 +448,7 @@ func deleteArticleByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Respond to indicate successful deletion
-	responseJSON(w, CustomOutput{Message: fmt.Sprintf("article with ID %d successfully deleted", id)}, http.StatusOK)
+	responseJSON(w, CustomOutput{Message: fmt.Sprintf("article with ID %s successfully deleted", id)}, http.StatusOK)
 }
 
 func searchArticles(w http.ResponseWriter, r *http.Request) {
