@@ -66,6 +66,7 @@ func main() {
   Helper functions
 */
 
+// initializeDatabase initializes the database by checking the required environment variables AS_DBSERVER and AS_DBPORT.
 func initializeDatabase() error {
 	var err error
 	dbServer := os.Getenv("AS_DBSERVER")
@@ -81,6 +82,9 @@ func initializeDatabase() error {
 	return err
 }
 
+// setupHTTPServer sets up and starts an HTTP server on address ":8080".
+// It configures route handlers for various endpoints and starts the server.
+// Use mux.HandleFunc to define route handlers for each endpoint.
 func setupHTTPServer() {
 
 	mux := http.NewServeMux()
@@ -93,7 +97,7 @@ func setupHTTPServer() {
 	mux.HandleFunc("DELETE /article/{id}", deleteArticleByID)
 	mux.HandleFunc("GET /articles/search", searchArticles)
 
-	serverAddress := ":8080"
+	serverAddress := ":8080" // HardCoded for this test
 	slog.Info(fmt.Sprintf("Starting HTTP Server on address %s\n", serverAddress))
 	if err := http.ListenAndServe(serverAddress, mux); err != nil {
 		log.Fatalf("Failed to start HTTP server: %v", err)
@@ -213,6 +217,9 @@ func buildSearchParams(providedParams url.Values, givenStruct any) []db.SearchPa
 Handlers Functions
 */
 
+// getAllArticles retrieves all articles from the database and returns them as a JSON response.
+// It uses db.GetAllKeys to get a list of article keys and db.JSONMGet to retrieve the article details for each key.
+// The function then validates and appends the first article element to the result. Finally, it sends the result as a JSON response.
 func getAllArticles(w http.ResponseWriter, r *http.Request) {
 	var articles []Article
 
@@ -262,6 +269,11 @@ func getAllArticles(w http.ResponseWriter, r *http.Request) {
 	responseJSON(w, result, http.StatusOK)
 }
 
+// getArticleByID retrieves an article from the database using the provided ID.
+// It builds a database key using the article ID and then uses db.JSONGet to retrieve the article.
+// If the article is not found, it returns an HTTP 404 Not Found response.
+// The function then unmarshals the article JSON into an Article struct and returns it as a JSON response.
+// If any unexpected errors occur during the process, it uses handleError to handle the errors and respond with an appropriate HTTP status code and message.
 func getArticleByID(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	// Build the Database key using the article ID.
@@ -292,14 +304,17 @@ func getArticleByID(w http.ResponseWriter, r *http.Request) {
 	responseJSON(w, article, http.StatusOK)
 }
 
-// createArticle processes an HTTP POST request to create a new article or a list of articles.
-// The function reads the entire request body and tries to unmarshal it into a slice of articles.
-// If unmarshalling fails, it tries again to unmarshal it into a single article.
-// If both attempts fail, an error response is sent indicating that the JSON payload is invalid.
-// The function then validates each article and generates a new ID if not provided.
-// If the article ID already exists in the database, an error response is sent.
-// The function sets the result in the database using JSONMSet and sends a successful response.
-// If any error occurs during the process, the handleError function is called to handle the error and send an error response.
+// createArticle handles the creation of articles. It reads the request body and expects
+// either an array of Article objects or a single Article object. The function performs
+// validation on each article, generates a unique ID if one is not provided, checks if the article
+// already exists in the database, and sets the articles in the database using JSONMSet.
+// The response is sent as JSON.
+//
+// If the provided JSON is not a list of articles or an article, it returns an error with a
+// Bad Request status code.
+//
+// If the JSON decoding, validation, reading, unmarshaling, or setting of articles in the
+// database fails, it returns an error with the appropriate status code.
 func createArticle(w http.ResponseWriter, r *http.Request) {
 	var articlesSetArgs []db.JSONSetArgs
 	var articles []Article
@@ -394,6 +409,13 @@ func createArticle(w http.ResponseWriter, r *http.Request) {
 	responseJSON(w, result, http.StatusOK)
 }
 
+// updateArticleByID updates an article with the provided ID in the database.
+// It decodes the JSON payload from the request body and populates the article struct.
+// Then, it validates the article struct using the validate library.
+// Next, it checks if the article exists in the database.
+// If the article does not exist, it responds with an HTTP 404 Not Found error.
+// Otherwise, it updates the article in the database using the key built from the ID.
+// Finally, it responds with the updated article as a JSON response.
 func updateArticleByID(w http.ResponseWriter, r *http.Request) {
 
 	id := r.PathValue("id")
@@ -434,6 +456,13 @@ func updateArticleByID(w http.ResponseWriter, r *http.Request) {
 	responseJSON(w, article, http.StatusOK)
 }
 
+// deleteArticleByID deletes an article from the database using the provided ID.
+// It constructs the database key for the article by concatenating the keysPrefix and the provided ID.
+// It then checks if the article exists in the database before attempting to delete it.
+// If the article does not exist, it returns an HTTP 404 Not Found response.
+// If there is an error while checking if the article exists, it uses handleError to handle the error and respond with an appropriate HTTP status code and message.
+// If there is an error while deleting the article, it uses handleError to handle the error and respond with an appropriate HTTP status code and message.
+// Finally, it responds with a success message indicating that the article has been successfully deleted.
 func deleteArticleByID(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
@@ -461,6 +490,9 @@ func deleteArticleByID(w http.ResponseWriter, r *http.Request) {
 	responseJSON(w, CustomOutput{Message: fmt.Sprintf("article with ID %s successfully deleted", id)}, http.StatusOK)
 }
 
+// searchArticles handles the search functionality for articles based on the provided query parameters.
+// It validates the parameters, builds the search parameters, and runs the search query.
+// The search results are returned in the HTTP response.
 func searchArticles(w http.ResponseWriter, r *http.Request) {
 
 	// Getting Expected parameters from Article JSON Tags
