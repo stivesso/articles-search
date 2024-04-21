@@ -317,7 +317,7 @@ func getArticleByID(w http.ResponseWriter, r *http.Request) {
 // database fails, it returns an error with the appropriate status code.
 func createArticle(w http.ResponseWriter, r *http.Request) {
 	var articlesSetArgs []db.JSONSetArgs
-	var articles []Article
+	var articles []*Article
 
 	jsonDecoder := json.NewDecoder(r.Body)
 
@@ -339,7 +339,7 @@ func createArticle(w http.ResponseWriter, r *http.Request) {
 				handleError(w, "Failed to decode request body", err, http.StatusBadRequest)
 				return
 			}
-			articles = append(articles, article)
+			articles = append(articles, &article)
 		}
 	case json.Delim('{'): // The token is an opening brace, indicating a single object
 		// Create a buffer and write the opening brace to it, since it was already consumed
@@ -357,7 +357,7 @@ func createArticle(w http.ResponseWriter, r *http.Request) {
 			handleError(w, "Failed to unmarshal JSON", err, http.StatusBadRequest)
 			return
 		}
-		articles = append(articles, article)
+		articles = append(articles, &article)
 	default:
 		handleError(w, "Invalid JSON format", errors.New("the Provided JSON is neither a list of articles nor an article"), http.StatusBadRequest)
 	}
@@ -406,7 +406,21 @@ func createArticle(w http.ResponseWriter, r *http.Request) {
 		handleError(w, "creating articles in the Database failed", err, http.StatusInternalServerError)
 		return
 	}
-	responseJSON(w, result, http.StatusOK)
+
+	// With error from JSONMSetArgs being nil, we should not expect result to not be OK
+	if result != "OK" {
+		handleError(w, "unexpected failure while creating articles in the Database", errors.New("JSONMSetArgs returns not ok result"), http.StatusInternalServerError)
+	}
+
+	// Output only the ID of the articles
+	outputArticles := make([]struct {
+		Id string `json:"id"`
+	}, len(articles))
+
+	for i := range articles {
+		outputArticles[i].Id = articles[i].Id
+	}
+	responseJSON(w, outputArticles, http.StatusOK)
 }
 
 // updateArticleByID updates an article with the provided ID in the database.
